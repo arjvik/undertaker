@@ -9,8 +9,8 @@ const MAX_MESSAGE_LENGTH = 102400
 const PORT = 18018
 const DESIRED_CONNECTIONS = 5
 
-// const peers: Set<string> = new Set(['45.63.84.226:18018', '45.63.89.228:18018', '144.202.122.8:18018'])
-const peers: Set<string> = new Set(['127.0.0.1:19019', '127.0.0.1:20020'])
+const peers: Set<string> = new Set(['45.63.84.226:18018', '45.63.89.228:18018', '144.202.122.8:18018'])
+// const peers: Set<string> = new Set(['127.0.0.1:19019', '127.0.0.1:20020'])
 const sockets: Set<net.Socket> = new Set()
 
 const getHostPort = (str: string) => {
@@ -73,13 +73,15 @@ const handleConnection = async (socket: net.Socket) => {
     let buffer: string = ''
 
     socket.on('data', async (chunk) => {
-        console.log(`Received data ${chunk} from ${socket.remoteAddress}`)
+        // console.log(`Received data ${chunk} from ${socket.remoteAddress}`)
         try {
             buffer += chunk.toString(undefined, 0, MAX_MESSAGE_LENGTH)
             buffer = buffer.substring(0, MAX_MESSAGE_LENGTH)
             let eom = buffer.indexOf('\n')
             while (eom != -1) {
-                const message: types.Message = types.Message.parse(JSON.parse(buffer.substring(0, eom)))
+                const json = buffer.substring(0, eom)
+                console.log(`Received message ${json} from ${socket.remoteAddress}`)
+                const message: types.Message = types.Message.parse(JSON.parse(json))
                 if (!saidHello && message.type != 'hello') {
                     sendError(socket, 'INVALID_HANDSHAKE', 'The peer sent other validly formatted messages before sending a valid hello message.')
                 }
@@ -92,13 +94,20 @@ const handleConnection = async (socket: net.Socket) => {
                         saidHello = true
                         break
                     case 'peers':
+                        console.log(`Received peers ${message.peers} from ${socket.remoteAddress}`)
                         for (const peer of message.peers) {
                             const host = getHostPort(peer).host
                             if (net.isIP(host) || isValidDomain(host)) {
-                                peers.add(peer)
-                                if (sockets.size < DESIRED_CONNECTIONS) {
-                                    connectToPeer(peer)
+                                if (!peers.has(peer)) {
+                                    console.log(`Valid peer ${peer} from ${socket.remoteAddress}`)
+                                    peers.add(peer)
+                                    if (sockets.size < DESIRED_CONNECTIONS) {
+                                        console.log(`Attempting to connect to peer #${sockets.size + 1} ${peer} advertised by ${socket.remoteAddress}`)
+                                        connectToPeer(peer)
+                                    }
                                 }
+                            } else {
+                                console.log(`Invalid peer ${peer} from ${socket.remoteAddress}`)
                             }
                         }
                         break
