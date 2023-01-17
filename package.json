@@ -1,0 +1,29 @@
+{
+  "name": "undertaker",
+  "version": "1.0.0",
+  "description": "Implementation of the Marabu blockchain protocol for Stanford EE 374",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/arjvik/undertaker.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/arjvik/undertaker/issues"
+  },
+  "homepage": "https://github.com/arjvik/undertaker#readme",
+  "dependencies": {
+    "@types/node": "^18.11.18",
+    "json-canonicalize": "^1.0.4",
+    "net": "^1.0.2",
+    "net-promise": "^1.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^4.9.4"
+  }
+}
