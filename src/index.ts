@@ -89,7 +89,7 @@ const handleConnection = async (socket: net.Socket) => {
                     case 'hello':
                         console.log(`Hello from ${message.agent} running protocol v${message.version}`)
                         if (!/^0.9.[0-9]+$/.test(message.version)) {
-                            sendError(socket, 'INVALID_HANDSHAKE', 'Peer protocol version ${message.version} unrecognized')
+                            sendError(socket, 'INVALID_HANDSHAKE', `Peer protocol version ${message.version} unrecognized`)
                         }
                         saidHello = true
                         break
