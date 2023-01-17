@@ -10,3 +10,4 @@ FROM node:alpine
 WORKDIR /app
 COPY --from=build /app/build/ ./
 COPY --from=build /app/node_modules/ ./node_modules/
+CMD ["node", "index.js"]
