@@ -8,6 +8,7 @@ import isValidDomain from 'is-valid-domain'
 const MAX_MESSAGE_LENGTH = 102400
 const PORT = 18018
 const DESIRED_CONNECTIONS = 5
+const SOCKET_TIMEOUT = 10_000
 
 const peers: Set<string> = new Set(['45.63.84.226:18018', '45.63.89.228:18018', '144.202.122.8:18018'])
 // const peers: Set<string> = new Set(['127.0.0.1:19019', '127.0.0.1:20020'])
@@ -54,12 +55,23 @@ const connectToPeer = async (peer: string) => {
     socket.connect(getHostPort(peer), () => handleConnection(socket))
 }
 
+const resetTimeout = (socket: net.Socket, timeoutID?: NodeJS.Timeout) => {
+    if (typeof timeoutID !== 'undefined') {
+        clearTimeout(timeoutID)
+    }
+    return setTimeout(async () => {
+        console.log(`Peer ${socket.remoteAddress} timed out.`)
+        sendError(socket, 'INVALID_FORMAT', 'Peer timed out.')
+    }, SOCKET_TIMEOUT)
+}
+
 const handleConnection = async (socket: net.Socket) => {
     console.log(`Client connected from ${socket.remoteAddress}:${socket.remotePort}`)
 
     sockets.add(socket)
 
     let saidHello: boolean = false
+    let timeoutID: NodeJS.Timeout = resetTimeout(socket)
 
     sendMessage(socket, {
         type: 'hello',
@@ -82,15 +94,13 @@ const handleConnection = async (socket: net.Socket) => {
                 const json = buffer.substring(0, eom)
                 console.log(`Received message ${json} from ${socket.remoteAddress}`)
                 const message: types.Message = types.Message.parse(JSON.parse(json))
+                timeoutID = resetTimeout(socket, timeoutID)
                 if (!saidHello && message.type != 'hello') {
                     sendError(socket, 'INVALID_HANDSHAKE', 'The peer sent other validly formatted messages before sending a valid hello message.')
                 }
                 switch (message.type) {
                     case 'hello':
                         console.log(`Hello from ${message.agent} running protocol v${message.version}`)
-                        if (!/^0.9.[0-9]+$/.test(message.version)) {
-                            sendError(socket, 'INVALID_HANDSHAKE', `Peer protocol version ${message.version} unrecognized`)
-                        }
                         saidHello = true
                         break
                     case 'peers':
