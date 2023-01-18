@@ -2,7 +2,7 @@ import { z } from 'zod'
 
 export const HelloMessage = z.object({
     type: z.literal('hello'),
-    version: z.string(),
+    version: z.string().regex(/^0\.9\.[0-9]+$/),
     agent: z.string().optional()
 })
 export type HelloMessage = z.infer<typeof HelloMessage>
