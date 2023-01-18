@@ -73,7 +73,7 @@ const handleConnection = async (socket: net.Socket) => {
     sendMessage(socket, {
         type: 'hello',
         version: '0.9.0',
-        agent: 'Undertaker v0.0.1-alpha (https://github.com/arjvik/undertaker)'
+        agent: 'Undertaker (GitHub: arjvik/undertaker, commit {{GIT-HASH}})'
     })
     sendMessage(socket, {
         type: 'getpeers'
