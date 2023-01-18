@@ -68,7 +68,7 @@ const handleConnection = async (socket: net.Socket) => {
     sockets.add(socket)
 
     let saidHello: boolean = false
-    let timeoutID: NodeJS.Timeout = addTimeout(socket)
+    let timeoutID: NodeJS.Timeout | undefined = undefined
 
     sendMessage(socket, {
         type: 'hello',
