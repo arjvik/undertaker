@@ -55,10 +55,7 @@ const connectToPeer = async (peer: string) => {
     socket.connect(getHostPort(peer), () => handleConnection(socket))
 }
 
-const resetTimeout = (socket: net.Socket, timeoutID?: NodeJS.Timeout) => {
-    if (typeof timeoutID !== 'undefined') {
-        clearTimeout(timeoutID)
-    }
+const addTimeout = (socket: net.Socket) => {
     return setTimeout(async () => {
         console.log(`Peer ${socket.remoteAddress} timed out.`)
         sendError(socket, 'INVALID_FORMAT', 'Peer timed out.')
@@ -71,7 +68,7 @@ const handleConnection = async (socket: net.Socket) => {
     sockets.add(socket)
 
     let saidHello: boolean = false
-    let timeoutID: NodeJS.Timeout = resetTimeout(socket)
+    let timeoutID: NodeJS.Timeout = addTimeout(socket)
 
     sendMessage(socket, {
         type: 'hello',
@@ -90,11 +87,13 @@ const handleConnection = async (socket: net.Socket) => {
             buffer += chunk.toString(undefined, 0, MAX_MESSAGE_LENGTH)
             buffer = buffer.substring(0, MAX_MESSAGE_LENGTH)
             let eom = buffer.indexOf('\n')
+            if (eom != -1) {
+                clearTimeout(timeoutID)
+            }
             while (eom != -1) {
                 const json = buffer.substring(0, eom)
                 console.log(`Received message ${json} from ${socket.remoteAddress}`)
                 const message: types.Message = types.Message.parse(JSON.parse(json))
-                timeoutID = resetTimeout(socket, timeoutID)
                 if (!saidHello && message.type != 'hello') {
                     sendError(socket, 'INVALID_HANDSHAKE', 'The peer sent other validly formatted messages before sending a valid hello message.')
                 }
@@ -131,6 +130,9 @@ const handleConnection = async (socket: net.Socket) => {
 
                 buffer = buffer.substring(eom + 1)
                 eom = buffer.indexOf('\n')
+            }
+            if (buffer.length > 0) {
+                timeoutID = addTimeout(socket)
             }
         } catch (err: any) {
             if (err instanceof SyntaxError || err instanceof ZodError) {
