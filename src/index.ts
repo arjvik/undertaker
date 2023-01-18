@@ -125,8 +125,10 @@ const handleConnection = async (socket: net.Socket) => {
         } catch (err: any) {
             if (err instanceof SyntaxError || err instanceof ZodError) {
                 sendError(socket, 'INVALID_FORMAT', 'The format of the received message is invalid.')
+            } else {
+                console.log(`!!INTERNAL_ERROR!! ${err} --- ${err.stack}`)
+                sendError(socket, 'INTERNAL_ERROR', `Something unexpected happened: ${'name' in err ? err.name : 'error'}`)
             }
-            sendError(socket, 'INTERNAL_ERROR', `Something unexpected happened: ${'name' in err ? err.name : 'error'}`)
         }
     })
 
