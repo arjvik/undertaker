@@ -25,19 +25,19 @@ const getHostPort = (str: string) => {
     }
 }
 
-const sendMessage = async (socket: net.Socket, message: types.Message) => {
+const sendMessage = (socket: net.Socket, message: types.Message) => {
     let json: string = canonicalize(message)
     console.log(`Sending message ${json} to ${socket.remoteAddress}`)
     socket.write(json + '\n')
 }
 
-const disconnect = async (socket: net.Socket) => {
+const disconnect = (socket: net.Socket) => {
     console.log(`Destroying socket to ${socket.remoteAddress}`)
     socket.destroy()
     sockets.delete(socket)
 }
 
-const sendError = async (socket: net.Socket, name: types.ErrorCode, message: string) => {
+const sendError = (socket: net.Socket, name: types.ErrorCode, message: string) => {
     sendMessage(socket, {
         type: 'error',
         name: name,
@@ -46,7 +46,7 @@ const sendError = async (socket: net.Socket, name: types.ErrorCode, message: str
     disconnect(socket)
 }
 
-const connectToPeer = async (peer: string) => {
+const connectToPeer = (peer: string) => {
     console.log(`Attemting to connect to ${peer}`)
     let socket: net.Socket = new net.Socket()
     socket.on('error', (err) => {
