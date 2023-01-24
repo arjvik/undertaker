@@ -4,6 +4,7 @@ import * as types from './types'
 import { ZodError } from 'zod'
 import 'is-valid-domain'
 import isValidDomain from 'is-valid-domain'
+import level from 'level-ts';
 
 const MAX_MESSAGE_LENGTH = 102400
 const PORT = 18018
@@ -13,6 +14,7 @@ const SOCKET_TIMEOUT = 10_000
 const peers: Set<string> = new Set(['45.63.84.226:18018', '45.63.89.228:18018', '144.202.122.8:18018'])
 // const peers: Set<string> = new Set(['127.0.0.1:19019', '127.0.0.1:20020'])
 const sockets: Set<net.Socket> = new Set()
+const db = new level('./db');
 
 const getHostPort = (str: string) => {
     let eoh = str.lastIndexOf(':')
@@ -45,6 +47,26 @@ const sendError = (socket: net.Socket, name: types.ErrorCode, message: string) =
     })
     disconnect(socket)
 }
+
+const generateObjectId = (object: types.Object) => {
+    var blake2 = require('blake2');
+    return blake2(32, null, null, canonicalize(object)).toString('hex');
+}
+
+const addObject = async (object: types.Object) => {
+    const objectId = generateObjectId(object);
+    const exists = await db.exists(objectId);
+    if (!exists) {
+        await db.put(objectId, object);
+    }
+}
+
+const getObject = async (socket: net.Socket, objectId: string) => {
+    const data = await db.get(objectId);
+    sendMessage(socket, data);
+}
+
+
 
 const connectToPeer = (peer: string) => {
     console.log(`Attemting to connect to ${peer}`)
@@ -126,6 +148,31 @@ const handleConnection = async (socket: net.Socket) => {
                             peers: Array.from(peers)
                         })
                         break
+                    case 'getobject':
+                        console.log(`Received getobject ${message.objectid} from ${socket.remoteAddress}`);
+                        await getObject(socket, message.objectid);
+                        break
+                    case 'object':
+                        console.log(`Received object ${message.object} from ${socket.remoteAddress}`);
+                        //TODO: Before calling this, we should validate message.object; idk if this is already handled though
+                        await addObject(message.object);
+                        //Implement gossipping protocol and broadcast this message to peers
+                        for (const peer of peers) {
+                            let peerSocket = new net.Socket();
+                            peerSocket.connect(getHostPort(peer), () => {
+                                sendMessage(peerSocket, message);
+                            });
+                        }
+                        break;
+                    case 'ihaveobject':
+                        console.log(`Received ihaveobject ${message.objectid} from ${socket.remoteAddress}`);
+                        const exists = await db.exists(message.objectid);
+                        if (!exists) {
+                            sendMessage(socket, {
+                                type: 'getobject',
+                                objectid: message.objectid
+                            });
+                        }
                 }
 
                 buffer = buffer.substring(eom + 1)
