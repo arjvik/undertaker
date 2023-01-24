@@ -12,7 +12,7 @@ type Socket = PromiseSocket<net.Socket>
 
 const MAX_MESSAGE_LENGTH = 102400
 const PORT = 18018
-const DESIRED_CONNECTIONS = 5
+const DESIRED_CONNECTIONS = 20
 const HELLO_TIMEOUT = 30_000
 const PARTIAL_MESSAGE_TIMEOUT = 10_000
 
@@ -60,13 +60,19 @@ const connectToPeer = async (peer: string) => {
     console.log(`Attemting to connect to ${peer}`)
     let socket: Socket = new PromiseSocket(new net.Socket())
 
-    socket.once('error').catch(async (err) => {
+    socket.stream.on('error', async (err) => {
         console.log(`Transmission error with ${peer}, disconnecting: ${err}`)
     })
 
-    socket.connect(getHostPort(peer))
-        .then(async () => handleConnection(socket))
-        .catch(() => console.log(`Failed to connect to ${peer}`));
+    try {
+        await socket.connect(getHostPort(peer))
+    } catch (err) {
+        console.log(`Failed to connect to ${peer}: ${err}`)
+        return
+    }
+    handleConnection(socket)
+        .then(() => { })
+        .catch((err) => console.log(`Error handling connection to ${peer} from connectToPeer: ${err}`))
 }
 
 const addTimeout = (socket: Socket, timeout: number = PARTIAL_MESSAGE_TIMEOUT) => {
@@ -261,13 +267,13 @@ const handleConnection = async (socket: Socket) => {
             }
         }
     })
-
-    socket.once('end').then(async () => {
+    
+    socket.stream.on('end', async () => {
         console.log(`Connection close from ${socket.stream.remoteAddress}`)
         await disconnect(socket)
     })
 
-    socket.once('error').catch(async (err) => {
+    socket.stream.on('error', async (err) => {
         console.log(`Transmission error from ${socket.stream.remoteAddress}: ${err}`)
         await disconnect(socket)
     })
@@ -278,7 +284,7 @@ server.on('error', (err) => {
     console.log(`!!SERVER ERROR!! ${err}`)
 })
 
-server.listen({ host: '0.0.0.0', port: PORT }, () => {
+server.listen({ port: PORT }, () => {
     console.log(`Serving on ${PORT}`)
 })
 
