@@ -107,5 +107,5 @@ export const ChainTipMessage = z.object({
 })
 export type ChainTipMessage = z.infer<typeof ChainTipMessage>
 
-export const Message = z.discriminatedUnion('type', [HelloMessage, ErrorMessage, GetPeersMessage, PeersMessage, GetObjectMessage, IHaveObjectMessage, ObjectMessage, GetMempoolMessage, MempoolMessage, GetChainTipMessage, ChainTipMessage])
+export const Message = z.discriminatedUnion('type', [HelloMessage, ErrorMessage, GetPeersMessage, PeersMessage, GetObjectMessage, IHaveObjectMessage, ObjectMessage, GetMempoolMessage, MempoolMessage, GetChainTipMessage, ChainTipMessage, TransactionObject])
 export type Message = z.infer<typeof Message>

@@ -1,10 +1,11 @@
 import * as net from 'net'
 import { canonicalize } from 'json-canonicalize'
 import * as types from './types'
-import { ZodError } from 'zod'
+import { number, ZodError } from 'zod'
 import 'is-valid-domain'
 import isValidDomain from 'is-valid-domain'
 import level from 'level-ts';
+import * as ed from '@noble/ed25519';
 
 const MAX_MESSAGE_LENGTH = 102400
 const PORT = 18018
@@ -171,6 +172,54 @@ const handleConnection = async (socket: net.Socket) => {
                                 objectid: message.objectid
                             });
                         }
+                        break;
+                    case 'transaction':
+                        if (message.inputs) {
+                            let inputVal: number = 0
+                            let outputVal: number = 0
+
+                            for (const input of message.inputs) {
+                                const {sig, outpoint: {index, txid}} = input
+
+                                // TODO: may have to change error description
+                                if (!await db.exists(txid)) {
+                                    return sendError(socket, 'UNKNOWN_OBJECT', 'The object requested is unknown to this specific node.')
+                                }
+
+                                const outpointTx: types.TransactionObject = await db.get(txid)
+
+                                if (input.outpoint.index >= outpointTx.outputs.length) {
+                                    return sendError(socket, 'INVALID_TX_OUTPOINT', 'The transaction outpoint index is too large.')
+                                }
+
+                                if (outpointTx.outputs[index] !== undefined) {
+                                    inputVal += outpointTx.outputs[index]?.value || 0
+                                }
+                                
+                                
+                                const pubkey = outpointTx.outputs[index]?.pubkey
+                                const message: any = input
+                                message.sig = null
+                                const isValid = await ed.verify(sig, canonicalize(message), pubkey || "")
+
+                                if (!isValid) {
+                                    return sendError(socket, 'INVALID_TX_SIGNATURE', 'The transaction signature is invalid.')
+                                }
+                            }
+
+                            for (const output of message.outputs) {
+                                if (!output.pubkey.match(/[0-9A-Fa-f]{6}/g) || output.value < 0) {
+                                    return sendError(socket, 'INVALID_FORMAT', 'The format of the received message is invalid.')
+                                }
+
+                                outputVal += output.value
+                            }
+
+                            if (inputVal !== outputVal) {
+                                return sendError(socket, 'INVALID_TX_CONSERVATION', 'The transaction does not satisfy the weak law of conservation.')
+                            }
+                        }
+                        
                 }
 
                 buffer = buffer.substring(eom + 1)
