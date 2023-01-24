@@ -41,7 +41,9 @@ const sendMessage = async (socket: Socket, message: types.Message) => {
 
 const disconnect = async (socket: Socket) => {
     console.log(`Destroying socket to ${socket.stream.remoteAddress}`)
-    socket.destroy()
+    try {
+        socket.destroy()
+    } catch { }
     sockets.delete(socket)
 }
 
@@ -59,7 +61,6 @@ const connectToPeer = async (peer: string) => {
 
     socket.once('error').catch(async (err) => {
         console.log(`Transmission error with ${peer}, disconnecting: ${err}`)
-        return disconnect(socket)
     })
 
     socket.connect(getHostPort(peer))
