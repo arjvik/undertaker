@@ -45,26 +45,26 @@ const disconnect = async (socket: Socket) => {
     sockets.delete(socket)
 }
 
-const sendError = async (socket: Socket, name: types.ErrorCode, message: string) => 
+const sendError = async (socket: Socket, name: types.ErrorCode, message: string) =>
     sendMessage(socket, {
         type: 'error',
         name: name,
         message: message
     })
-    .then(() => disconnect(socket))
+        .then(() => disconnect(socket))
 
 const connectToPeer = async (peer: string) => {
     console.log(`Attemting to connect to ${peer}`)
     let socket: Socket = new PromiseSocket(new net.Socket())
-    
+
     socket.once('error').catch(async (err) => {
         console.log(`Transmission error with ${peer}, disconnecting: ${err}`)
         return disconnect(socket)
     })
 
     socket.connect(getHostPort(peer))
-          .then(async () => handleConnection(socket))
-          .catch(() => console.log(`Failed to connect to ${peer}`));
+        .then(async () => handleConnection(socket))
+        .catch(() => console.log(`Failed to connect to ${peer}`));
 }
 
 const addTimeout = (socket: Socket, timeout: number = PARTIAL_MESSAGE_TIMEOUT) => {
@@ -75,7 +75,7 @@ const addTimeout = (socket: Socket, timeout: number = PARTIAL_MESSAGE_TIMEOUT) =
 }
 
 const hashObject = (object: types.Object) =>
-    createHash('blake2s', {digestLength: 32})
+    createHash('blake2s', { digestLength: 32 })
         .update(Buffer.from(canonicalize(object), 'ascii'))
         .digest('hex')
 
@@ -94,7 +94,7 @@ const validateObject = async (socket: Socket, object: types.Object) => {
             if ('inputs' in object) {
                 let signableObject: { type: "transaction", outputs: { value: number, pubkey: string, }[], inputs: { outpoint: { txid: string, index: number, }, sig: string | null, }[] }
                     = JSON.parse(JSON.stringify(object)) // deep copy hack
-                for (const input of signableObject.inputs) {                
+                for (const input of signableObject.inputs) {
                     input.sig = null
                 }
                 let signableText: string = canonicalize(signableObject)
@@ -224,13 +224,13 @@ const handleConnection = async (socket: Socket) => {
                             if (!await db.exists(objectid)) {
                                 await db.put(objectid, message.object)
                             }
-                            
+
                             await Promise.all([...sockets]
-                                                .map((receiverSocket) =>
-                                                    async () => sendMessage(receiverSocket, {
-                                                        type: 'ihaveobject',
-                                                        objectid: objectid
-                                                    })))
+                                .map((receiverSocket) =>
+                                    async () => sendMessage(receiverSocket, {
+                                        type: 'ihaveobject',
+                                        objectid: objectid
+                                    })))
                         }
                         break
                     case 'ihaveobject':
@@ -264,7 +264,7 @@ const handleConnection = async (socket: Socket) => {
         console.log(`Connection close from ${socket.stream.remoteAddress}`)
         await disconnect(socket)
     })
-    
+
     socket.once('error').catch(async (err) => {
         console.log(`Transmission error from ${socket.stream.remoteAddress}: ${err}`)
         await disconnect(socket)
@@ -281,5 +281,5 @@ server.listen({ host: '0.0.0.0', port: PORT }, () => {
 })
 
 for (const peer of peers) {
-    connectToPeer(peer).then(() => {})
+    connectToPeer(peer).then(() => { })
 }
