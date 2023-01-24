@@ -48,6 +48,22 @@ const sendError = (socket: net.Socket, name: types.ErrorCode, message: string) =
     disconnect(socket)
 }
 
+const connectToPeer = (peer: string) => {
+    console.log(`Attemting to connect to ${peer}`)
+    let socket: net.Socket = new net.Socket()
+    socket.on('error', (err) => {
+        console.log(`Transmission error with ${peer}: ${err}`)
+    })
+    socket.connect(getHostPort(peer), () => handleConnection(socket))
+}
+
+const addTimeout = (socket: net.Socket) => {
+    return setTimeout(async () => {
+        console.log(`Peer ${socket.remoteAddress} timed out.`)
+        sendError(socket, 'INVALID_FORMAT', 'Peer timed out.')
+    }, SOCKET_TIMEOUT)
+}
+
 const generateObjectId = (object: types.Object) => {
     var blake2 = require('blake2');
     return blake2(32, null, null, canonicalize(object)).toString('hex');
@@ -64,24 +80,6 @@ const addObject = async (object: types.Object) => {
 const getObject = async (socket: net.Socket, objectId: string) => {
     const data = await db.get(objectId);
     sendMessage(socket, data);
-}
-
-
-
-const connectToPeer = (peer: string) => {
-    console.log(`Attemting to connect to ${peer}`)
-    let socket: net.Socket = new net.Socket()
-    socket.on('error', (err) => {
-        console.log(`Transmission error with ${peer}: ${err}`)
-    })
-    socket.connect(getHostPort(peer), () => handleConnection(socket))
-}
-
-const addTimeout = (socket: net.Socket) => {
-    return setTimeout(async () => {
-        console.log(`Peer ${socket.remoteAddress} timed out.`)
-        sendError(socket, 'INVALID_FORMAT', 'Peer timed out.')
-    }, SOCKET_TIMEOUT)
 }
 
 const handleConnection = async (socket: net.Socket) => {
