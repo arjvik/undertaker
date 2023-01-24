@@ -8,7 +8,6 @@ import PromiseSocket from 'promise-socket'
 import { createHash } from 'blake2'
 import * as ed from '@noble/ed25519';
 
-
 type Socket = PromiseSocket<net.Socket>
 
 const MAX_MESSAGE_LENGTH = 102400
@@ -36,14 +35,16 @@ const getHostPort = (str: string) => {
 const sendMessage = async (socket: Socket, message: types.Message) => {
     let json: string = canonicalize(message)
     console.log(`Sending message ${json} to ${socket.stream.remoteAddress}`)
-    return socket.write(json + '\n')
+    return socket.write(json + '\n').catch(() => console.log(`Unable to send message ${json} to ${socket.stream.remoteAddress}`))
 }
 
 const disconnect = async (socket: Socket) => {
     console.log(`Destroying socket to ${socket.stream.remoteAddress}`)
     try {
         socket.destroy()
-    } catch { }
+    } catch (err) {
+        console.log(`Unable to destroy socket to ${socket.stream.remoteAddress}: ${err}`)
+    }
     sockets.delete(socket)
 }
 
@@ -53,7 +54,7 @@ const sendError = async (socket: Socket, name: types.ErrorCode, message: string)
         name: name,
         message: message
     })
-        .then(() => disconnect(socket))
+    .then(() => disconnect(socket))
 
 const connectToPeer = async (peer: string) => {
     console.log(`Attemting to connect to ${peer}`)
