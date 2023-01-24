@@ -4,6 +4,8 @@ services:
   undertaker:
     image: undertaker
     build: .
+    volumes:
+      - ./database:/app/database
     restart: always
     ports:
       - 18018:18018
