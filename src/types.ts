@@ -46,23 +46,31 @@ export type IHaveObjectMessage = z.infer<typeof IHaveObjectMessage>
 export const Sig = z.string().regex(/^[0-9a-f]{128}$/)
 export type Sig = z.infer<typeof Sig>
 
-export const TransactionObject = z.object({
+const TransactionCommon = z.object({
     type: z.literal('transaction'),
-    inputs: z.array(z.object({
-        outpoint: z.object({
-            txid: Hash,
-            index: z.number().int().nonnegative()
-        }),
-        sig: Sig
-    })).optional(),
     outputs: z.array(z.object({
         pubkey: Hash,
         value: z.number().int().nonnegative()
-    })),
-    height: z.number().int().nonnegative().optional()
+    }))
 })
-
+export const TransactionObject = z.union([
+    TransactionCommon.merge(
+        z.object({
+            inputs: z.array(z.object({
+                outpoint: z.object({
+                    txid: Hash,
+                    index: z.number().int().nonnegative()
+                }),
+                sig: Sig
+            }))
+        })),
+    TransactionCommon.merge(
+        z.object({
+            height: z.number().int().nonnegative()
+        }))
+])
 export type TransactionObject = z.infer<typeof TransactionObject>
+
 export const BlockObject = z.object({
     type: z.literal('block'),
     txids: z.array(Hash),
@@ -76,7 +84,7 @@ export const BlockObject = z.object({
 })
 export type BlockObject = z.infer<typeof BlockObject>
 
-export const Object = z.discriminatedUnion('type', [TransactionObject, BlockObject])
+export const Object = z.union([TransactionObject, BlockObject])
 export type Object = z.infer<typeof Object>
 
 export const ObjectMessage = z.object({
