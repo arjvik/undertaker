@@ -1,12 +1,12 @@
+import * as ed from '@noble/ed25519'
+import { createHash } from 'blake2'
 import isValidDomain from 'is-valid-domain'
 import { canonicalize } from 'json-canonicalize'
 import level from 'level-ts'
 import * as net from 'net'
+import PromiseSocket from 'promise-socket'
 import { ZodError } from 'zod'
 import * as types from './types'
-import PromiseSocket from 'promise-socket'
-import { createHash } from 'blake2'
-import * as ed from '@noble/ed25519';
 
 type Socket = PromiseSocket<net.Socket>
 
@@ -34,8 +34,8 @@ const getHostPort = (str: string) => {
 
 const sendMessage = async (socket: Socket, message: types.Message) => {
     let json: string = canonicalize(message)
-    console.log(`Sending message ${json} to ${socket.stream.remoteAddress}`)
-    return socket.write(json + '\n').catch(() => console.log(`Unable to send message ${json} to ${socket.stream.remoteAddress}`))
+    console.log(`Sending message ${json} to ${socket.stream.remoteAddress}:${socket.stream.remotePort}`)
+    return socket.write(json + '\n').catch(() => console.log(`Unable to send message ${json} to ${socket.stream.remoteAddress}:${socket.stream.remotePort}`))
 }
 
 const disconnect = async (socket: Socket) => {
@@ -48,13 +48,16 @@ const disconnect = async (socket: Socket) => {
     sockets.delete(socket)
 }
 
-const sendError = async (socket: Socket, name: types.ErrorCode, message: string) =>
-    sendMessage(socket, {
+const sendError = async (socket: Socket, name: types.ErrorCode, message: string) => {
+    await sendMessage(socket, {
         type: 'error',
         name: name,
         message: message
     })
-    .then(() => disconnect(socket))
+    if (name == 'INVALID_FORMAT' || name == 'INVALID_HANDSHAKE') {
+        await disconnect(socket)
+    }
+}
 
 const connectToPeer = async (peer: string) => {
     console.log(`Attemting to connect to ${peer}`)
@@ -84,7 +87,7 @@ const addTimeout = (socket: Socket, timeout: number = PARTIAL_MESSAGE_TIMEOUT) =
 
 const hashObject = (object: types.Object) =>
     createHash('blake2s', { digestLength: 32 })
-        .update(Buffer.from(canonicalize(object), 'ascii'))
+        .update(Buffer.from(canonicalize(object), 'utf8'))
         .digest('hex')
 
 const validateStringSignature = async (signature: string, message: string, publicKey: string) => {
@@ -99,7 +102,9 @@ const validateObject = async (socket: Socket, object: types.Object) => {
         case 'block':
             return true
         case 'transaction':
+            console.log(`Attempting to verify transaction ${hashObject(object)}: ${canonicalize(object)}`)
             if ('inputs' in object) {
+                console.log(`Transaction ${hashObject(object)} is not a coinbase`)
                 let signableObject: { type: "transaction", outputs: { value: number, pubkey: string, }[], inputs: { outpoint: { txid: string, index: number, }, sig: string | null, }[] }
                     = JSON.parse(JSON.stringify(object)) // deep copy hack
                 for (const input of signableObject.inputs) {
@@ -127,7 +132,14 @@ const validateObject = async (socket: Socket, object: types.Object) => {
                         return false
                     }
                     totalInputValue += outpoint.value
+                    console.log(`Validated input ${object.inputs.indexOf(input)} of transaction ${hashObject(object)}`)
                 }
+
+                if (new Set(object.inputs.map(i => JSON.stringify(i.outpoint))).size < object.inputs.length) {
+                    await sendError(socket, 'INVALID_TX_OUTPOINT', `Transaction has duplicate outpoints.`)
+                    return false
+                }
+
                 let totalOutputValue: number = 0
                 for (const output of object.outputs) {
                     totalOutputValue += output.value
@@ -136,15 +148,17 @@ const validateObject = async (socket: Socket, object: types.Object) => {
                     await sendError(socket, 'INVALID_TX_CONSERVATION', `Transaction has more outputs than inputs`)
                     return false
                 }
+            } else {
+                console.log(`Transaction ${hashObject(object)} is coinbase and therefore valid`)
             }
             return true
     }
 }
 
 const handleConnection = async (socket: Socket) => {
-    const remoteAddress = socket.stream.remoteAddress
+    const remoteAddress = `${socket.stream.remoteAddress}:${socket.stream.remotePort}`
 
-    console.log(`Client #${sockets.size + 1} connected from ${remoteAddress}:${socket.stream.remotePort}`)
+    console.log(`Client #${sockets.size + 1} connected from ${remoteAddress}`)
 
     sockets.add(socket)
 
@@ -212,33 +226,38 @@ const handleConnection = async (socket: Socket) => {
                     case 'getobject':
                         console.log(`Received getobject for ${message.objectid} from ${remoteAddress}`)
                         try {
-                            const object = await db.get(message.objectid)
-                            await sendMessage(socket, {
-                                type: 'object',
-                                object: object
-                            })
-                        } catch (err: any) {
-                            if ('code' in err && err.code == 'LEVEL_NOT_FOUND') {
-                                await sendError(socket, 'UNKNOWN_OBJECT', `Object ${message.objectid} not found: ${err.code} - ${'cause' in err ? err.cause : 'cause'}`)
+                            if (!await db.exists(message.objectid)) {
+                                const object = await db.get(message.objectid)
+                                await sendMessage(socket, {
+                                    type: 'object',
+                                    object: object
+                                })
                             } else {
-                                await sendError(socket, 'INTERNAL_ERROR', `Failed to retrieve object from database: ${err}`)
+                                await sendError(socket, 'UNKNOWN_OBJECT', `Object ${message.objectid} not found`)
                             }
+                        } catch (err: any) {
+                            await sendError(socket, 'INTERNAL_ERROR', `Failed to retrieve object from database: ${err}`)
                         }
                         break
                     case 'object':
                         console.log(`Received object ${message.object} from ${remoteAddress}`)
                         if (await validateObject(socket, message.object)) {
+                            console.log(`Validated object ${message.object} from ${remoteAddress}`)
                             const objectid: string = hashObject(message.object)
                             if (!await db.exists(objectid)) {
                                 await db.put(objectid, message.object)
                             }
-
-                            await Promise.all([...sockets]
-                                .map((receiverSocket) =>
-                                    async () => sendMessage(receiverSocket, {
+                            await Promise.all(
+                                [...sockets].map(async (receiverSocket) => {
+                                    console.log(`Sending ihaveobject ${objectid} to ${remoteAddress}`)
+                                    return sendMessage(receiverSocket, {
                                         type: 'ihaveobject',
                                         objectid: objectid
-                                    })))
+                                    })
+                                })
+                            )
+                        } else {
+                            console.log(`Failed to validate object ${message.object} from ${remoteAddress}`)
                         }
                         break
                     case 'ihaveobject':
@@ -267,7 +286,7 @@ const handleConnection = async (socket: Socket) => {
             }
         }
     })
-    
+
     socket.stream.on('end', async () => {
         console.log(`Connection close from ${socket.stream.remoteAddress}`)
         await disconnect(socket)

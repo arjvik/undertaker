@@ -7,7 +7,7 @@ export const HelloMessage = z.object({
 })
 export type HelloMessage = z.infer<typeof HelloMessage>
 
-export const ErrorCode = z.union([z.literal('INTERNAL_ERROR'), z.literal('INVALID_FORMAT'), z.literal('UNKNOWN_OBJECT'), z.literal('UNFINDABLE_OBJECT'), z.literal('INVALID_HANDSHAKE'), z.literal('INVALID_TX_OUTPOINT'), z.literal('INVALID_TX_SIGNATURE'), z.literal('INVALID_TX_CONSERVATION'), z.literal('INVALID_BLOCK_COINBASE'), z.literal('INVALID_BLOCK_TIMESTAMP'), z.literal('INVALID_BLOCK_POW'), z.literal('INVALID_GENES')])
+export const ErrorCode = z.enum(['INTERNAL_ERROR', 'INVALID_FORMAT', 'UNKNOWN_OBJECT', 'UNFINDABLE_OBJECT', 'INVALID_HANDSHAKE', 'INVALID_TX_OUTPOINT', 'INVALID_TX_SIGNATURE', 'INVALID_TX_CONSERVATION', 'INVALID_BLOCK_COINBASE', 'INVALID_BLOCK_TIMESTAMP', 'INVALID_BLOCK_POW', 'INVALID_GENESIS'])
 export type ErrorCode = z.infer<typeof ErrorCode>
 
 export const ErrorMessage = z.object({
