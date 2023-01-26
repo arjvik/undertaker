@@ -226,7 +226,7 @@ const handleConnection = async (socket: Socket) => {
                     case 'getobject':
                         console.log(`Received getobject for ${message.objectid} from ${remoteAddress}`)
                         try {
-                            if (!await db.exists(message.objectid)) {
+                            if (await db.exists(message.objectid)) {
                                 const object = await db.get(message.objectid)
                                 await sendMessage(socket, {
                                     type: 'object',
