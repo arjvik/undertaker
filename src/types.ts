@@ -71,13 +71,14 @@ export const TransactionObject = z.union([
 ])
 export type TransactionObject = z.infer<typeof TransactionObject>
 
+const BLOCK_POW_TARGET = '00000000abc00000000000000000000000000000000000000000000000000000'
 export const BlockObject = z.object({
     type: z.literal('block'),
     txids: z.array(Hash),
     nonce: Hash,
     previd: Hash,
     created: z.number().int(),
-    T: Hash,
+    T: z.literal(Hash.parse(BLOCK_POW_TARGET as Hash)),
     miner: z.string().max(128).optional(),
     note: z.string().max(128).optional(),
     studentids: z.array(z.string().max(128)).max(10).optional()

@@ -1,5 +1,6 @@
 import * as ed from '@noble/ed25519'
 import { createHash } from 'blake2'
+import delay from 'delay'
 import isValidDomain from 'is-valid-domain'
 import { canonicalize } from 'json-canonicalize'
 import level from 'level-ts'
@@ -7,6 +8,7 @@ import * as net from 'net'
 import PromiseSocket from 'promise-socket'
 import { ZodError } from 'zod'
 import * as types from './types'
+import 'promise-any-polyfill'
 
 type Socket = PromiseSocket<net.Socket>
 
@@ -15,11 +17,14 @@ const PORT = 18018
 const DESIRED_CONNECTIONS = 20
 const HELLO_TIMEOUT = 30_000
 const PARTIAL_MESSAGE_TIMEOUT = 10_000
+const FIND_OBJECT_TIMEOUT = 30_000
 
 const peers: Set<string> = new Set(['45.63.84.226:18018', '45.63.89.228:18018', '144.202.122.8:18018'])
 // const peers: Set<string> = new Set(['127.0.0.1:19019', '127.0.0.1:20020'])
 const sockets: Set<Socket> = new Set()
-const db: level<types.Object> = new level('./database');
+const db: level<types.Object> = new level('./database')
+
+const handles: { [key: types.Hash]: {promise: Promise<boolean>, resolve: ((found: boolean | PromiseLike<boolean>) => void) | null} } = {}
 
 const getHostPort = (str: string) => {
     let eoh = str.lastIndexOf(':')
@@ -100,6 +105,42 @@ const validateStringSignature = async (signature: string, message: string, publi
 const validateObject = async (socket: Socket, object: types.Object) => {
     switch (object.type) {
         case 'block':
+            console.log(`Attempting to verify block ${hashObject(object)}: ${canonicalize(object)}`)
+            if (hashObject(object) >= object.T) {
+                await sendError(socket, 'INVALID_BLOCK_POW', `Block ${hashObject(object)} does not meet proof of work requirement.`)
+                return false
+            }
+            for (const txid of object.txids) {
+                if (!await db.exists(txid)) {
+                    Promise.all(
+                        [...sockets].map(async (receiverSocket) => {
+                            console.log(`Sending ihaveobject ${txid} to ${receiverSocket.stream.remoteAddress}`)
+                            return sendMessage(receiverSocket, {
+                                type: 'getobject',
+                                objectid: txid
+                            })
+                        })
+                    ).then(() => { })
+                    if (!(txid in handles)) {
+                        handles[txid] = {
+                            promise: new Promise((resolve) => {
+                                handles[txid].resolve = resolve
+                            }),
+                            resolve: null
+                        }
+                    }
+                    let promise: Promise<boolean> = Promise.any([delay(FIND_OBJECT_TIMEOUT).then(() => true), handles[txid].promise])
+                    if (await promise) {
+                        if (!await db.exists(txid)) {
+                            await sendError(socket, 'INTERNAL_ERROR', `Struggling to find ${txid} internally`)
+                            console.log(`!!ERROR!! Struggling to find ${txid} internally!`)
+                            return false
+                        }
+                    } else {
+                        await sendError(socket, 'UNFINDABLE_OBJECT', `Unable find ${txid} externally`)
+                    }
+                }
+            }
             return true
         case 'transaction':
             console.log(`Attempting to verify transaction ${hashObject(object)}: ${canonicalize(object)}`)
@@ -136,7 +177,7 @@ const validateObject = async (socket: Socket, object: types.Object) => {
                 }
 
                 if (new Set(object.inputs.map(i => JSON.stringify(i.outpoint))).size < object.inputs.length) {
-                    await sendError(socket, 'INVALID_TX_OUTPOINT', `Transaction has duplicate outpoints.`)
+                    await sendError(socket, 'INVALID_TX_CONSERVATION', `Transaction has duplicate outpoints.`)
                     return false
                 }
 
@@ -247,9 +288,12 @@ const handleConnection = async (socket: Socket) => {
                             if (!await db.exists(objectid)) {
                                 await db.put(objectid, message.object)
                             }
+                            if (objectid in handles) {
+                                handles[objectid].resolve()
+                            }
                             await Promise.all(
                                 [...sockets].map(async (receiverSocket) => {
-                                    console.log(`Sending ihaveobject ${objectid} to ${remoteAddress}`)
+                                    console.log(`Sending ihaveobject ${objectid} to ${receiverSocket.stream.remoteAddress}`)
                                     return sendMessage(receiverSocket, {
                                         type: 'ihaveobject',
                                         objectid: objectid
@@ -261,12 +305,12 @@ const handleConnection = async (socket: Socket) => {
                         }
                         break
                     case 'ihaveobject':
-                        console.log(`Received ihaveobject ${message.objectid} from ${remoteAddress}`);
+                        console.log(`Received ihaveobject ${message.objectid} from ${remoteAddress}`)
                         if (!await db.exists(message.objectid)) {
                             await sendMessage(socket, {
                                 type: 'getobject',
                                 objectid: message.objectid
-                            });
+                            })
                         }
                 }
 
