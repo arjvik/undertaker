@@ -102,6 +102,107 @@ const validateStringSignature = async (signature: string, message: string, publi
     return ed.verify(signatureBytes, messageBytes, publicKeyBytes)
 }
 
+const createUTXOSet = async (block: types.BlockObject): Promise<Map<string, types.UTXO>> => {
+    let utxoSet = new Map();
+    for (let tx of block.txids) {
+        const transaction = await db.get(tx);
+        if (transaction.type == 'transaction') {
+            for (let i = 0; i < transaction.outputs.length; i++) {
+                addToUTXOSet(utxoSet, tx, i, transaction.outputs[i].value);
+            }
+        }
+    }
+    return utxoSet;
+}
+
+function addToUTXOSet(utxoSet: Map<string, types.UTXO>, txid: string, outputIndex: number, value: number) {
+    const key = `${txid}:${outputIndex}`;
+    const utxo: types.UTXO = {value, txid, index: outputIndex};
+    utxoSet.set(key, utxo);
+  }
+  
+  function removeFromUTXOSet(utxoSet: Map<string, types.UTXO>, txid: string, outputIndex: number) {
+    const key = `${txid}:${outputIndex}`;
+    utxoSet.delete(key);
+  }
+
+// Assumption: This function is only called after we validate the block
+const updateUTXOSet = async (socket: Socket, block: types.BlockObject): Promise<Map<string, types.UTXO>> => {
+    if (!await db.exists(block.previd)) {
+        await sendError(socket, 'INVALID_BLOCK_POW', `previd ${block.previd} does not exist`)
+        return new Map();
+    }
+    let prevBlock = await db.get(block.previd)
+    let prevUTXOSet = new Map();
+    if (prevBlock.type === 'block') {
+        createUTXOSet(prevBlock).then((result) => {prevUTXOSet = result})
+        let unspentFees = 0
+        for (const txid of block.txids) {
+            // Handle non-coinbase txns and check that each input corresponds to an output that exists in utxo set
+            const tx = await db.get(txid)
+            
+            if (tx.type === 'transaction') {
+                if ("inputs" in tx) {
+                    for (const input of tx.inputs) {       
+                        if (!prevUTXOSet.has(input.outpoint.txid+ ":" + input.outpoint.index)) {
+                            await sendError(socket, 'INVALID_TX_OUTPOINT', `Output not found in UTXO set: ${input.outpoint.txid}:${input.outpoint.index}`)
+                            return prevUTXOSet;
+                        }
+                    }
+                    let inputSum = 0;
+                    let outputSum = 0;
+                    let newUTXOSet = new Map(prevUTXOSet);
+                    for (const input of tx.inputs) {
+                        inputSum += newUTXOSet.get(input.outpoint.txid + ":" + input.outpoint.index).value;
+                        //Remove spent UTXOs
+                        removeFromUTXOSet(newUTXOSet, input.outpoint.txid, input.outpoint.index);
+                    }
+                    for (let i = 0; i < tx.outputs.length; i++) {
+                        outputSum += tx.outputs[i].value;
+                        //Add created UTXOs
+                        addToUTXOSet(newUTXOSet, txid, i, tx.outputs[i].value);
+                    }
+                    if (inputSum < outputSum) {
+                        await sendError(socket, 'INVALID_TX_CONSERVATION', `Transaction does not satisfy weak law of conservation: ${inputSum} < ${outputSum}`)
+                        return prevUTXOSet;
+                    } else {
+                        unspentFees += (outputSum - inputSum)
+                    }
+                    prevUTXOSet = newUTXOSet;
+                } else if ("height" in tx) {
+                    if (txid !== block.txids[0]) {
+                        await sendError(socket, 'INVALID_BLOCK_COINBASE', `Coinbase transaction must be the first in the txids`)
+                        return prevUTXOSet;
+                    }
+                }
+            }
+
+        }
+        // Handle a Coinbase txn
+        const txid = block.txids[0];
+        const tx = await db.get(txid);
+        if (tx.type === 'transaction' && "height" in tx) {
+            //TODO
+            // if (tx.height !== block.height) {
+            //     await sendError(socket, 'INVALID_BLOCK_COINBASE', `Coinbase transaction height must match the height of the block the transaction is contained in`)
+            //     return prevUTXOSet;
+            // }
+            if (tx.outputs.length !== 1) {
+                await sendError(socket, 'INVALID_FORMAT', `Coinbase transaction must have exactly one output`)
+                return prevUTXOSet;
+            }
+            if (tx.outputs[0].value > (50 * 10**12 + unspentFees)) {
+                await sendError(socket, 'INVALID_BLOCK_COINBASE', `Coinbase transaction output value cannot exceed 50 * 10^12`)
+                return prevUTXOSet;
+            }
+            // Add created UTXOs
+            addToUTXOSet(prevUTXOSet, txid, 0, tx.outputs[0].value);
+        }
+    }
+    
+    return prevUTXOSet;
+}
+
 const validateObject = async (socket: Socket, object: types.Object) => {
     switch (object.type) {
         case 'block':
@@ -141,6 +242,7 @@ const validateObject = async (socket: Socket, object: types.Object) => {
                     }
                 }
             }
+            // Maintain a UTXO set
             return true
         case 'transaction':
             console.log(`Attempting to verify transaction ${hashObject(object)}: ${canonicalize(object)}`)
@@ -289,7 +391,10 @@ const handleConnection = async (socket: Socket) => {
                                 await db.put(objectid, message.object)
                             }
                             if (objectid in handles) {
-                                handles[objectid].resolve()
+                                let object = handles[objectid]
+                                if (object.resolve !== null) {
+                                    object.resolve(true)
+                                }
                             }
                             await Promise.all(
                                 [...sockets].map(async (receiverSocket) => {

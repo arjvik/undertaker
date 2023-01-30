@@ -94,6 +94,14 @@ export const ObjectMessage = z.object({
 })
 export type ObjectMessage = z.infer<typeof ObjectMessage>
 
+export const UTXO = z.object({
+    txid: Hash,
+    index: z.number(),
+    value: z.number(),
+})
+
+export type UTXO = z.infer<typeof UTXO>
+
 export const GetMempoolMessage = z.object({
     type: z.literal('getmempool')
 })
