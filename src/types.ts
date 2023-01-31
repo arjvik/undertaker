@@ -51,7 +51,7 @@ const Outpoint = z.object({
     index: z.number().int().nonnegative()
 })
 
-export type UTXO = z.infer<typeof Outpoint> & { value: bigint }
+export type UTXO = z.infer<typeof Outpoint> & { value: number }
 
 const TransactionCommon = z.object({
     type: z.literal('transaction')
@@ -61,7 +61,7 @@ export const TransactionObject = z.union([
         z.object({
             outputs: z.array(z.object({
                 pubkey: Hash,
-                value: z.number().int().nonnegative().transform(BigInt)
+                value: z.number().int().nonnegative()
             })),
             inputs: z.array(z.object({
                 outpoint: Outpoint,
@@ -72,7 +72,7 @@ export const TransactionObject = z.union([
         z.object({
             outputs: z.array(z.object({
                 pubkey: Hash,
-                value: z.number().int().nonnegative().transform(BigInt)
+                value: z.number().int().nonnegative()
             })).length(1),
             height: z.number().int().nonnegative()
         }).strict())

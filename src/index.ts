@@ -199,12 +199,12 @@ const validateObject = async (socket: Socket, object: types.Object) => {
                             await sendError(socket, 'INVALID_TX_OUTPOINT', `UTXO ${input.outpoint.txid}:${input.outpoint.index} not found in UTXO set`)
                             return false
                         }
-                        transactionFees += getUTXO(utxoSet, input.outpoint.txid, input.outpoint.index).value
+                        transactionFees += BigInt(getUTXO(utxoSet, input.outpoint.txid, input.outpoint.index).value)
                         utxoSet = withoutUTXO(utxoSet, input.outpoint.txid, input.outpoint.index)
                         console.log(`UTXO ${input.outpoint.txid}:${input.outpoint.index} found and removed from UTXO set`)
                     }
                     tx.outputs.forEach((output, index) => {
-                        transactionFees -= output.value
+                        transactionFees -= BigInt(output.value)
                         utxoSet.push({txid: txid, index: index, value: output.value})
                         console.log(`Created UTXO ${txid}:${index}`)
                     })
@@ -229,7 +229,7 @@ const validateObject = async (socket: Socket, object: types.Object) => {
                 }
                 if (coinbase.outputs[0].value > transactionFees + BLOCK_REWARD) {
                     console.log(`Coinbase transaction steals too much in fees in block ${hash}`)
-                    await sendError(socket, 'INVALID_BLOCK_COINBASE', `BlockhashObject(object) ${hash} reward of ${coinbase.outputs[0].value - transactionFees} (excluding transaction fees of ${transactionFees}) exceeds max reward of ${BLOCK_REWARD}`)
+                    await sendError(socket, 'INVALID_BLOCK_COINBASE', `BlockhashObject(object) ${hash} reward of ${BigInt(coinbase.outputs[0].value) - transactionFees} (excluding transaction fees of ${transactionFees}) exceeds max reward of ${BLOCK_REWARD}`)
                     return false
                 } else {
                     console.log(`Coinbase transaction takes fair fees in block ${hash}`)
@@ -271,7 +271,7 @@ const validateObject = async (socket: Socket, object: types.Object) => {
                         await sendError(socket, 'INVALID_TX_SIGNATURE', `Signature ${input.sig} is invalid.`)
                         return false
                     }
-                    totalInputValue += outpoint.value
+                    totalInputValue += BigInt(outpoint.value)
                     console.log(`Validated input ${object.inputs.indexOf(input)} of transaction ${hash}`)
                 }
 
@@ -282,7 +282,7 @@ const validateObject = async (socket: Socket, object: types.Object) => {
 
                 let totalOutputValue: bigint = 0n
                 for (const output of object.outputs) {
-                    totalOutputValue += output.value
+                    totalOutputValue += BigInt(output.value)
                 }
                 if (totalInputValue < totalOutputValue) {
                     await sendError(socket, 'INVALID_TX_CONSERVATION', `Transaction has more outputs than inputs`)
