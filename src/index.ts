@@ -27,15 +27,14 @@ const PORT = 18018
 const DESIRED_CONNECTIONS = 20
 const HELLO_TIMEOUT = 30_000
 const PARTIAL_MESSAGE_TIMEOUT = 10_000
-// const FIND_OBJECT_TIMEOUT = 10_000
-const FIND_OBJECT_TIMEOUT = 30_000
+const FIND_OBJECT_TIMEOUT = 10_000
 
 const BLOCK_REWARD = 50_000000000000n
 
 const GENESIS_BLOCK = "0000000052a0e645eca917ae1c196e0d0a4fb756747f29ef52594d68484bb5e2"
 
-// const peers: Set<string> = new Set(['45.63.84.226:18018', '45.63.89.228:18018', '144.202.122.8:18018'])
-const peers: Set<string> = new Set(['127.0.0.1:19019', '127.0.0.1:20020'])
+const peers: Set<string> = new Set(['45.63.84.226:18018', '45.63.89.228:18018', '144.202.122.8:18018'])
+// const peers: Set<string> = new Set(['127.0.0.1:19019', '127.0.0.1:20020'])
 const sockets: Set<Socket> = new Set()
 const db: level<types.Object> = new level('./database')
 const utxos: level<types.UTXO[]> = new level('./utxos')
