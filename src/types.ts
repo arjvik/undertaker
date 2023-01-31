@@ -13,7 +13,7 @@ export type ErrorCode = z.infer<typeof ErrorCode>
 export const ErrorMessage = z.object({
     type: z.literal('error'),
     name: ErrorCode,
-    message: z.string().optional()
+    description: z.string().optional()
 })
 export type ErrorMessage = z.infer<typeof ErrorMessage>
 
@@ -46,28 +46,36 @@ export type IHaveObjectMessage = z.infer<typeof IHaveObjectMessage>
 export const Sig = z.string().regex(/^[0-9a-f]{128}$/)
 export type Sig = z.infer<typeof Sig>
 
+const Outpoint = z.object({
+    txid: Hash,
+    index: z.number().int().nonnegative()
+})
+
+export type UTXO = z.infer<typeof Outpoint> & { value: bigint }
+
 const TransactionCommon = z.object({
-    type: z.literal('transaction'),
-    outputs: z.array(z.object({
-        pubkey: Hash,
-        value: z.number().int().nonnegative()
-    }))
+    type: z.literal('transaction')
 })
 export const TransactionObject = z.union([
     TransactionCommon.merge(
         z.object({
+            outputs: z.array(z.object({
+                pubkey: Hash,
+                value: z.number().int().nonnegative().transform(BigInt)
+            })),
             inputs: z.array(z.object({
-                outpoint: z.object({
-                    txid: Hash,
-                    index: z.number().int().nonnegative()
-                }),
+                outpoint: Outpoint,
                 sig: Sig
             }))
-        })),
+        }).strict()),
     TransactionCommon.merge(
         z.object({
+            outputs: z.array(z.object({
+                pubkey: Hash,
+                value: z.number().int().nonnegative().transform(BigInt)
+            })).length(1),
             height: z.number().int().nonnegative()
-        }))
+        }).strict())
 ])
 export type TransactionObject = z.infer<typeof TransactionObject>
 
@@ -76,13 +84,13 @@ export const BlockObject = z.object({
     type: z.literal('block'),
     txids: z.array(Hash),
     nonce: Hash,
-    previd: Hash,
+    previd: Hash.nullable(),
     created: z.number().int(),
     T: z.literal(Hash.parse(BLOCK_POW_TARGET as Hash)),
     miner: z.string().max(128).optional(),
     note: z.string().max(128).optional(),
     studentids: z.array(z.string().max(128)).max(10).optional()
-})
+}).strict()
 export type BlockObject = z.infer<typeof BlockObject>
 
 export const Object = z.union([TransactionObject, BlockObject])
@@ -93,14 +101,6 @@ export const ObjectMessage = z.object({
     object: Object
 })
 export type ObjectMessage = z.infer<typeof ObjectMessage>
-
-export const UTXO = z.object({
-    txid: Hash,
-    index: z.number(),
-    value: z.number(),
-})
-
-export type UTXO = z.infer<typeof UTXO>
 
 export const GetMempoolMessage = z.object({
     type: z.literal('getmempool')
