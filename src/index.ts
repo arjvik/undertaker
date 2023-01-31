@@ -9,9 +9,19 @@ import PromiseSocket from 'promise-socket'
 import { ZodError } from 'zod'
 import * as types from './types'
 import 'promise-any-polyfill'
+import { EventEmitter } from 'events'
 
 //@ts-expect-error // BigInt is not JSON serializable, https://stackoverflow.com/a/70315718
 BigInt.prototype.toJSON = function () { return Number(this) }
+
+interface Emitter<T> {
+    on(event: string, listener: (arg: T) => void): this
+    once(event: string, listener: (arg: T) => void): this
+    emit(event: string, arg: T): boolean
+}
+function createEmitter<T>(): Emitter<T> {
+    return new EventEmitter()
+}
 
 type Socket = PromiseSocket<net.Socket>
 
@@ -32,7 +42,7 @@ const sockets: Set<Socket> = new Set()
 const db: level<types.Object> = new level('./database')
 const utxos: level<types.UTXO[]> = new level('./utxos')
 
-const handles: { [key: types.Hash]: {promise: Promise<types.Object>, resolve: ((found: types.Object) => void) | null} } = {}
+const objectReceivedEmitter = createEmitter<types.Object>()
 
 const getHostPort = (str: string) => {
     let eoh = str.lastIndexOf(':')
@@ -121,15 +131,10 @@ const ensureObject = async (socket: Socket, objectid: string) => {
                 })
             })
         ).then(() => { })
-        if (!(objectid in handles)) {
-            handles[objectid] = {
-                promise: new Promise((resolve) => {
-                    handles[objectid].resolve = resolve
-                }),
-                resolve: null
-            }
-        }
-        const promise: Promise<types.Object | null> = Promise.any([delay(FIND_OBJECT_TIMEOUT).then(() => null), handles[objectid].promise])
+        const promise: Promise<types.Object | null> = Promise.any([
+            delay(FIND_OBJECT_TIMEOUT).then(() => null),
+            new Promise(resolve => objectReceivedEmitter.once(objectid, resolve))
+        ])
         const result: types.Object | null = await promise
         if (result == null) {
             await sendError(socket, 'UNFINDABLE_OBJECT', `Unable find ${objectid} externally`)
@@ -394,12 +399,7 @@ const handleConnection = async (socket: Socket) => {
                             if (!await db.exists(objectid)) {
                                 await db.put(objectid, message.object)
                             }
-                            if (objectid in handles) {
-                                let handle = handles[objectid]
-                                if (handle.resolve !== null) {
-                                    handle.resolve(message.object)
-                                }
-                            }
+                            objectReceivedEmitter.emit(objectid, message.object)
                             await Promise.all(
                                 [...sockets].map(async (receiverSocket) => {
                                     console.log(`Sending ihaveobject ${objectid} to ${receiverSocket.stream.remoteAddress}`)
