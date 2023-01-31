@@ -167,7 +167,7 @@ const validateObject = async (socket: Socket, object: types.Object) => {
                 sendError(socket, 'INVALID_BLOCK_COINBASE', 'Only the first transaction can be a coinbase transaction')
                 return false
             }
-            const coinbase = 'height' in transactions[0] ? transactions[0] : null
+            const coinbase = transactions.length > 0 && 'height' in transactions[0] ? transactions[0] : null
             console.log(`Block ${hash} has coinbase ${coinbase}`)
             if (object.previd === null) {
                 if (hash !== GENESIS_BLOCK) {
