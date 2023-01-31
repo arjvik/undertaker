@@ -10,6 +10,9 @@ import { ZodError } from 'zod'
 import * as types from './types'
 import 'promise-any-polyfill'
 
+//@ts-expect-error // BigInt is not JSON serializable, https://stackoverflow.com/a/70315718
+BigInt.prototype.toJSON = function () { return Number(this) }
+
 type Socket = PromiseSocket<net.Socket>
 
 const MAX_MESSAGE_LENGTH = 102400
