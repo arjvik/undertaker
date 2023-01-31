@@ -11,9 +11,6 @@ import * as types from './types'
 import 'promise-any-polyfill'
 import { EventEmitter } from 'events'
 
-//@ts-expect-error // BigInt is not JSON serializable, https://stackoverflow.com/a/70315718
-BigInt.prototype.toJSON = function () { return Number(this) }
-
 interface Emitter<T> {
     on(event: string, listener: (arg: T) => void): this
     once(event: string, listener: (arg: T) => void): this
@@ -30,14 +27,15 @@ const PORT = 18018
 const DESIRED_CONNECTIONS = 20
 const HELLO_TIMEOUT = 30_000
 const PARTIAL_MESSAGE_TIMEOUT = 10_000
-const FIND_OBJECT_TIMEOUT = 10_000
+// const FIND_OBJECT_TIMEOUT = 10_000
+const FIND_OBJECT_TIMEOUT = 30_000
 
 const BLOCK_REWARD = 50_000000000000n
 
 const GENESIS_BLOCK = "0000000052a0e645eca917ae1c196e0d0a4fb756747f29ef52594d68484bb5e2"
 
-const peers: Set<string> = new Set(['45.63.84.226:18018', '45.63.89.228:18018', '144.202.122.8:18018'])
-// const peers: Set<string> = new Set(['127.0.0.1:19019', '127.0.0.1:20020'])
+// const peers: Set<string> = new Set(['45.63.84.226:18018', '45.63.89.228:18018', '144.202.122.8:18018'])
+const peers: Set<string> = new Set(['127.0.0.1:19019', '127.0.0.1:20020'])
 const sockets: Set<Socket> = new Set()
 const db: level<types.Object> = new level('./database')
 const utxos: level<types.UTXO[]> = new level('./utxos')
@@ -124,7 +122,7 @@ const ensureObject = async (socket: Socket, objectid: string) => {
     if (!await db.exists(objectid)) {
         Promise.all(
             [...sockets].map(async (receiverSocket) => {
-                console.log(`Sending ihaveobject ${objectid} to ${receiverSocket.stream.remoteAddress}`)
+                console.log(`Sending getobject ${objectid} to ${receiverSocket.stream.remoteAddress}`)
                 return sendMessage(receiverSocket, {
                     type: 'getobject',
                     objectid: objectid
@@ -207,12 +205,12 @@ const validateObject = async (socket: Socket, object: types.Object) => {
                             await sendError(socket, 'INVALID_TX_OUTPOINT', `UTXO ${input.outpoint.txid}:${input.outpoint.index} not found in UTXO set`)
                             return false
                         }
-                        transactionFees += getUTXO(utxoSet, input.outpoint.txid, input.outpoint.index).value
+                        transactionFees += BigInt(getUTXO(utxoSet, input.outpoint.txid, input.outpoint.index).value)
                         utxoSet = withoutUTXO(utxoSet, input.outpoint.txid, input.outpoint.index)
                         console.log(`UTXO ${input.outpoint.txid}:${input.outpoint.index} found and removed from UTXO set`)
                     }
                     tx.outputs.forEach((output, index) => {
-                        transactionFees -= output.value
+                        transactionFees -= BigInt(output.value)
                         utxoSet.push({txid: txid, index: index, value: output.value})
                         console.log(`Created UTXO ${txid}:${index}`)
                     })
@@ -237,7 +235,7 @@ const validateObject = async (socket: Socket, object: types.Object) => {
                 }
                 if (coinbase.outputs[0].value > transactionFees + BLOCK_REWARD) {
                     console.log(`Coinbase transaction steals too much in fees in block ${hash}`)
-                    await sendError(socket, 'INVALID_BLOCK_COINBASE', `BlockhashObject(object) ${hash} reward of ${coinbase.outputs[0].value - transactionFees} (excluding transaction fees of ${transactionFees}) exceeds max reward of ${BLOCK_REWARD}`)
+                    await sendError(socket, 'INVALID_BLOCK_COINBASE', `BlockhashObject(object) ${hash} reward of ${BigInt(coinbase.outputs[0].value) - transactionFees} (excluding transaction fees of ${transactionFees}) exceeds max reward of ${BLOCK_REWARD}`)
                     return false
                 } else {
                     console.log(`Coinbase transaction takes fair fees in block ${hash}`)
@@ -279,7 +277,7 @@ const validateObject = async (socket: Socket, object: types.Object) => {
                         await sendError(socket, 'INVALID_TX_SIGNATURE', `Signature ${input.sig} is invalid.`)
                         return false
                     }
-                    totalInputValue += outpoint.value
+                    totalInputValue += BigInt(outpoint.value)
                     console.log(`Validated input ${object.inputs.indexOf(input)} of transaction ${hash}`)
                 }
 
@@ -290,7 +288,7 @@ const validateObject = async (socket: Socket, object: types.Object) => {
 
                 let totalOutputValue: bigint = 0n
                 for (const output of object.outputs) {
-                    totalOutputValue += output.value
+                    totalOutputValue += BigInt(output.value)
                 }
                 if (totalInputValue < totalOutputValue) {
                     await sendError(socket, 'INVALID_TX_CONSERVATION', `Transaction has more outputs than inputs`)
@@ -392,10 +390,10 @@ const handleConnection = async (socket: Socket) => {
                         }
                         break
                     case 'object':
-                        console.log(`Received object ${message.object} from ${remoteAddress}`)
+                        const objectid: string = hashObject(message.object)
+                        console.log(`Received object ${objectid} from ${remoteAddress}`)
                         if (await validateObject(socket, message.object)) {
-                            console.log(`Validated object ${message.object} from ${remoteAddress}`)
-                            const objectid: string = hashObject(message.object)
+                            console.log(`Validated object ${objectid} from ${remoteAddress}`)
                             if (!await db.exists(objectid)) {
                                 await db.put(objectid, message.object)
                             }
@@ -410,7 +408,7 @@ const handleConnection = async (socket: Socket) => {
                                 })
                             )
                         } else {
-                            console.log(`Failed to validate object ${message.object} from ${remoteAddress}`)
+                            console.log(`Failed to validate object ${objectid} from ${remoteAddress}`)
                         }
                         break
                     case 'ihaveobject':
@@ -463,3 +461,5 @@ server.listen({ port: PORT }, () => {
 for (const peer of peers) {
     connectToPeer(peer).then(() => { })
 }
+
+process.on('SIGINT', process.exit);
