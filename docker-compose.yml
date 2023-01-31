@@ -6,6 +6,7 @@ services:
     build: .
     volumes:
       - ./database:/app/database
+      - ./utxos:/app/utxos
     restart: always
     ports:
       - 18018:18018
