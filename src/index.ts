@@ -152,6 +152,7 @@ const withoutUTXO = (utxoSet: types.UTXO[], txid: string, index: number): types.
 
 const validateObject = async (socket: Socket, object: types.Object) => {
     const hash = hashObject(object)
+    console.log(`Validating object ${hash}`)
     switch (object.type) {
         case 'block':
             console.log(`Attempting to verify block ${hash}: ${canonicalize(object)}`)
@@ -336,6 +337,9 @@ const handleConnection = async (socket: Socket) => {
             }
             while (eom != -1) {
                 const json = buffer.substring(0, eom)
+                buffer = buffer.substring(eom + 1)
+                eom = buffer.indexOf('\n')
+
                 console.log(`Received message ${json} from ${remoteAddress}`)
                 const message: types.Message = types.Message.parse(JSON.parse(json))
                 if (!saidHello && message.type != 'hello') {
@@ -419,9 +423,6 @@ const handleConnection = async (socket: Socket) => {
                             })
                         }
                 }
-
-                buffer = buffer.substring(eom + 1)
-                eom = buffer.indexOf('\n')
             }
             if (buffer.length > 0) {
                 timeoutID = addTimeout(socket)
@@ -461,4 +462,4 @@ for (const peer of peers) {
     connectToPeer(peer).then(() => { })
 }
 
-process.on('SIGINT', process.exit);
+process.on('SIGINT', () => process.exit(0));
