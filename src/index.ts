@@ -17,14 +17,19 @@ const PORT = 18018
 const DESIRED_CONNECTIONS = 20
 const HELLO_TIMEOUT = 30_000
 const PARTIAL_MESSAGE_TIMEOUT = 10_000
-const FIND_OBJECT_TIMEOUT = 30_000
+const FIND_OBJECT_TIMEOUT = 10_000
+
+const BLOCK_REWARD = 50_000000000000n
+
+const GENESIS_BLOCK = "0000000052a0e645eca917ae1c196e0d0a4fb756747f29ef52594d68484bb5e2"
 
 const peers: Set<string> = new Set(['45.63.84.226:18018', '45.63.89.228:18018', '144.202.122.8:18018'])
 // const peers: Set<string> = new Set(['127.0.0.1:19019', '127.0.0.1:20020'])
 const sockets: Set<Socket> = new Set()
 const db: level<types.Object> = new level('./database')
+const utxos: level<types.UTXO[]> = new level('./utxos')
 
-const handles: { [key: types.Hash]: {promise: Promise<boolean>, resolve: ((found: boolean | PromiseLike<boolean>) => void) | null} } = {}
+const handles: { [key: types.Hash]: {promise: Promise<types.Object>, resolve: ((found: types.Object) => void) | null} } = {}
 
 const getHostPort = (str: string) => {
     let eoh = str.lastIndexOf(':')
@@ -53,11 +58,11 @@ const disconnect = async (socket: Socket) => {
     sockets.delete(socket)
 }
 
-const sendError = async (socket: Socket, name: types.ErrorCode, message: string) => {
+const sendError = async (socket: Socket, name: types.ErrorCode, description: string) => {
     await sendMessage(socket, {
         type: 'error',
         name: name,
-        message: message
+        description: description
     })
     if (name == 'INVALID_FORMAT' || name == 'INVALID_HANDSHAKE') {
         await disconnect(socket)
@@ -102,159 +107,151 @@ const validateStringSignature = async (signature: string, message: string, publi
     return ed.verify(signatureBytes, messageBytes, publicKeyBytes)
 }
 
-const createUTXOSet = async (block: types.BlockObject): Promise<Map<string, types.UTXO>> => {
-    let utxoSet = new Map();
-    for (let tx of block.txids) {
-        const transaction = await db.get(tx);
-        if (transaction.type == 'transaction') {
-            for (let i = 0; i < transaction.outputs.length; i++) {
-                addToUTXOSet(utxoSet, tx, i, transaction.outputs[i].value);
+const ensureObject = async (socket: Socket, objectid: string) => {
+    if (!await db.exists(objectid)) {
+        Promise.all(
+            [...sockets].map(async (receiverSocket) => {
+                console.log(`Sending ihaveobject ${objectid} to ${receiverSocket.stream.remoteAddress}`)
+                return sendMessage(receiverSocket, {
+                    type: 'getobject',
+                    objectid: objectid
+                })
+            })
+        ).then(() => { })
+        if (!(objectid in handles)) {
+            handles[objectid] = {
+                promise: new Promise((resolve) => {
+                    handles[objectid].resolve = resolve
+                }),
+                resolve: null
             }
         }
+        const promise: Promise<types.Object | null> = Promise.any([delay(FIND_OBJECT_TIMEOUT).then(() => null), handles[objectid].promise])
+        const result: types.Object | null = await promise
+        if (result == null) {
+            await sendError(socket, 'UNFINDABLE_OBJECT', `Unable find ${objectid} externally`)
+            return null
+        } else {
+            return result
+        }
     }
-    return utxoSet;
+    return db.get(objectid)
 }
 
-function addToUTXOSet(utxoSet: Map<string, types.UTXO>, txid: string, outputIndex: number, value: number) {
-    const key = `${txid}:${outputIndex}`;
-    const utxo: types.UTXO = {value, txid, index: outputIndex};
-    utxoSet.set(key, utxo);
-  }
-  
-  function removeFromUTXOSet(utxoSet: Map<string, types.UTXO>, txid: string, outputIndex: number) {
-    const key = `${txid}:${outputIndex}`;
-    utxoSet.delete(key);
-  }
+const noNullElements = <T> (elems: (T | null)[]): elems is T[] => !elems.includes(null)
+const allTrue = (elems: boolean[]): boolean => !elems.includes(false)
 
-// Assumption: This function is only called after we validate the block
-const updateUTXOSet = async (socket: Socket, block: types.BlockObject): Promise<Map<string, types.UTXO>> => {
-    if (!await db.exists(block.previd)) {
-        await sendError(socket, 'INVALID_BLOCK_POW', `previd ${block.previd} does not exist`)
-        return new Map();
-    }
-    let prevBlock = await db.get(block.previd)
-    let prevUTXOSet = new Map();
-    if (prevBlock.type === 'block') {
-        createUTXOSet(prevBlock).then((result) => {prevUTXOSet = result})
-        let unspentFees = 0
-        for (const txid of block.txids) {
-            // Handle non-coinbase txns and check that each input corresponds to an output that exists in utxo set
-            const tx = await db.get(txid)
-            
-            if (tx.type === 'transaction') {
-                if ("inputs" in tx) {
-                    for (const input of tx.inputs) {       
-                        if (!prevUTXOSet.has(input.outpoint.txid+ ":" + input.outpoint.index)) {
-                            await sendError(socket, 'INVALID_TX_OUTPOINT', `Output not found in UTXO set: ${input.outpoint.txid}:${input.outpoint.index}`)
-                            return prevUTXOSet;
-                        }
-                    }
-                    let inputSum = 0;
-                    let outputSum = 0;
-                    let newUTXOSet = new Map(prevUTXOSet);
-                    for (const input of tx.inputs) {
-                        inputSum += newUTXOSet.get(input.outpoint.txid + ":" + input.outpoint.index).value;
-                        //Remove spent UTXOs
-                        removeFromUTXOSet(newUTXOSet, input.outpoint.txid, input.outpoint.index);
-                    }
-                    for (let i = 0; i < tx.outputs.length; i++) {
-                        outputSum += tx.outputs[i].value;
-                        //Add created UTXOs
-                        addToUTXOSet(newUTXOSet, txid, i, tx.outputs[i].value);
-                    }
-                    if (inputSum < outputSum) {
-                        await sendError(socket, 'INVALID_TX_CONSERVATION', `Transaction does not satisfy weak law of conservation: ${inputSum} < ${outputSum}`)
-                        return prevUTXOSet;
-                    } else {
-                        unspentFees += (outputSum - inputSum)
-                    }
-                    prevUTXOSet = newUTXOSet;
-                } else if ("height" in tx) {
-                    if (txid !== block.txids[0]) {
-                        await sendError(socket, 'INVALID_BLOCK_COINBASE', `Coinbase transaction must be the first in the txids`)
-                        return prevUTXOSet;
-                    }
-                }
-            }
-
-        }
-        // Handle a Coinbase txn
-        const txid = block.txids[0];
-        const tx = await db.get(txid);
-        if (tx.type === 'transaction' && "height" in tx) {
-            //TODO
-            // if (tx.height !== block.height) {
-            //     await sendError(socket, 'INVALID_BLOCK_COINBASE', `Coinbase transaction height must match the height of the block the transaction is contained in`)
-            //     return prevUTXOSet;
-            // }
-            if (tx.outputs.length !== 1) {
-                await sendError(socket, 'INVALID_FORMAT', `Coinbase transaction must have exactly one output`)
-                return prevUTXOSet;
-            }
-            if (tx.outputs[0].value > (50 * 10**12 + unspentFees)) {
-                await sendError(socket, 'INVALID_BLOCK_COINBASE', `Coinbase transaction output value cannot exceed 50 * 10^12`)
-                return prevUTXOSet;
-            }
-            // Add created UTXOs
-            addToUTXOSet(prevUTXOSet, txid, 0, tx.outputs[0].value);
-        }
-    }
-    
-    return prevUTXOSet;
-}
+const hasUTXO = (utxoSet: types.UTXO[], txid: string, index: number): boolean => !utxoSet.every((utxo: types.UTXO) => utxo.txid != txid || utxo.index != index)
+const getUTXO = (utxoSet: types.UTXO[], txid: string, index: number): types.UTXO => utxoSet.find((utxo: types.UTXO) => utxo.txid == txid && utxo.index == index) as types.UTXO
+const withoutUTXO = (utxoSet: types.UTXO[], txid: string, index: number): types.UTXO[] => utxoSet.filter((utxo: types.UTXO) => utxo.txid != txid || utxo.index != index)
 
 const validateObject = async (socket: Socket, object: types.Object) => {
+    const hash = hashObject(object)
     switch (object.type) {
         case 'block':
-            console.log(`Attempting to verify block ${hashObject(object)}: ${canonicalize(object)}`)
-            if (hashObject(object) >= object.T) {
-                await sendError(socket, 'INVALID_BLOCK_POW', `Block ${hashObject(object)} does not meet proof of work requirement.`)
+            console.log(`Attempting to verify block ${hash}: ${canonicalize(object)}`)
+            if (hash >= object.T) {
+                console.log(`Block hash ${hash} >= T ${object.T}`)
+                await sendError(socket, 'INVALID_BLOCK_POW', `Block ${hash} does not meet proof of work requirement.`)
                 return false
             }
-            for (const txid of object.txids) {
-                if (!await db.exists(txid)) {
-                    Promise.all(
-                        [...sockets].map(async (receiverSocket) => {
-                            console.log(`Sending ihaveobject ${txid} to ${receiverSocket.stream.remoteAddress}`)
-                            return sendMessage(receiverSocket, {
-                                type: 'getobject',
-                                objectid: txid
-                            })
-                        })
-                    ).then(() => { })
-                    if (!(txid in handles)) {
-                        handles[txid] = {
-                            promise: new Promise((resolve) => {
-                                handles[txid].resolve = resolve
-                            }),
-                            resolve: null
-                        }
-                    }
-                    let promise: Promise<boolean> = Promise.any([delay(FIND_OBJECT_TIMEOUT).then(() => true), handles[txid].promise])
-                    if (await promise) {
-                        if (!await db.exists(txid)) {
-                            await sendError(socket, 'INTERNAL_ERROR', `Struggling to find ${txid} internally`)
-                            console.log(`!!ERROR!! Struggling to find ${txid} internally!`)
-                            return false
-                        }
-                    } else {
-                        await sendError(socket, 'UNFINDABLE_OBJECT', `Unable find ${txid} externally`)
-                    }
+            const transactions = (await Promise.all(object.txids.map(async (txid) => ensureObject(socket, txid)))) as (types.TransactionObject | null)[]
+            if (noNullElements(transactions)) {
+                console.log(`All txids found in block ${hash}`)
+            } else {
+                console.log(`Not all txids found in block ${hash}`)
+                return false
+            }
+            if (!allTrue(transactions.slice(1).map(tx => 'inputs' in tx))) {
+                console.log(`At least one transaction after the first in ${hash} is a coinbase transaction`)
+                sendError(socket, 'INVALID_BLOCK_COINBASE', 'Only the first transaction can be a coinbase transaction')
+                return false
+            }
+            const coinbase = 'height' in transactions[0] ? transactions[0] : null
+            console.log(`Block ${hash} has coinbase ${coinbase}`)
+            if (object.previd === null) {
+                if (hash !== GENESIS_BLOCK) {
+                    console.log(`Block ${hash} does not have a previd but is not the genesis block`)
+                    await sendError(socket, 'INVALID_GENESIS', `Block ${hash} does not have a previd but is not the genesis block`)
+                    return false
+                } else {
+                    console.log(`Block really is the genesis block`)
+                }
+            } else {
+                if (await ensureObject(socket, object.previd) == null) {
+                    console.log(`Unable to find previd ${object.previd} for block ${hash}`)
+                    return false
+                } else {
+                    console.log(`Successfully ensured knowledge of prev block ${object.previd} for block ${hash}`)
                 }
             }
-            // Maintain a UTXO set
+            let utxoSet = object.previd != null ? await utxos.get(object.previd) : []
+            let transactionFees = 0n
+            console.log(`Building UTXO set for block ${hash}`)
+            for (const [tx, txid, i] of transactions.map((e, i): [types.TransactionObject, string, number] => [e as types.TransactionObject, object.txids[i], i])) {
+                console.log(`Current UTXO set: ${utxoSet}, current transaction fees ${transactionFees}`)
+                console.log(`Handling transaction #${i+1}: ${txid}`)
+                if ('inputs' in tx) {
+                    console.log(`Transaction ${txid} is a normal transaction`)
+                    for (const input of tx.inputs) {
+                        if (!hasUTXO(utxoSet, input.outpoint.txid, input.outpoint.index)) {
+                            console.log(`UTXO ${input.outpoint.txid}:${input.outpoint.index} not found in UTXO set`)
+                            await sendError(socket, 'INVALID_TX_OUTPOINT', `UTXO ${input.outpoint.txid}:${input.outpoint.index} not found in UTXO set`)
+                            return false
+                        }
+                        transactionFees += getUTXO(utxoSet, input.outpoint.txid, input.outpoint.index).value
+                        utxoSet = withoutUTXO(utxoSet, input.outpoint.txid, input.outpoint.index)
+                        console.log(`UTXO ${input.outpoint.txid}:${input.outpoint.index} found and removed from UTXO set`)
+                    }
+                    tx.outputs.forEach((output, index) => {
+                        transactionFees -= output.value
+                        utxoSet.push({txid: txid, index: index, value: output.value})
+                        console.log(`Created UTXO ${txid}:${index}`)
+                    })
+                } else {
+                    console.log(`Transaction ${txid} is a coinbase transaction`)
+                    tx.outputs.forEach((output, index) => {
+                        console.log(`Created UTXO ${txid}:${index} - this should only be printed once per block`)
+                        utxoSet.push({txid: txid, index: index, value: output.value})
+                    })
+                }
+            }
+            console.log(`Final UTXO set for block ${hash}: ${utxoSet}, transaction fees ${transactionFees}`)
+            utxos.put(hash, utxoSet)
+            if (coinbase != null) {
+                console.log(`Beginning coinbase verification for block ${hash}`)
+                if (!hasUTXO(utxoSet, object.txids[0], 0)) {
+                    console.log(`Coinbase transaction spent output within block ${hash}`)
+                    await sendError(socket, 'INVALID_TX_OUTPOINT', 'Cannot spend output of coinbase transaction within block')
+                    return false
+                } else {
+                    console.log(`Coinbase transaction does not spend output within block ${hash}`)
+                }
+                if (coinbase.outputs[0].value > transactionFees + BLOCK_REWARD) {
+                    console.log(`Coinbase transaction steals too much in fees in block ${hash}`)
+                    await sendError(socket, 'INVALID_BLOCK_COINBASE', `BlockhashObject(object) ${hash} reward of ${coinbase.outputs[0].value - transactionFees} (excluding transaction fees of ${transactionFees}) exceeds max reward of ${BLOCK_REWARD}`)
+                    return false
+                } else {
+                    console.log(`Coinbase transaction takes fair fees in block ${hash}`)
+                }
+            } else {
+                console.log(`No coinbase transaction to verify in block ${hash}`)
+            }
             return true
         case 'transaction':
-            console.log(`Attempting to verify transaction ${hashObject(object)}: ${canonicalize(object)}`)
-            if ('inputs' in object) {
-                console.log(`Transaction ${hashObject(object)} is not a coinbase`)
+            console.log(`Attempting to verify transaction ${hash}: ${canonicalize(object)}`)
+            if ('inputs' in object && object.inputs != undefined && 'height' in object && object.height != undefined) {
+                await sendError(socket, 'INVALID_FORMAT', `Transaction ${hash} is coinbase but has height`)
+                return false
+            } else if ('inputs' in object && object.inputs != undefined) {
+                console.log(`Transaction ${hash} is not a coinbase`)
                 let signableObject: { type: "transaction", outputs: { value: number, pubkey: string, }[], inputs: { outpoint: { txid: string, index: number, }, sig: string | null, }[] }
                     = JSON.parse(JSON.stringify(object)) // deep copy hack
                 for (const input of signableObject.inputs) {
                     input.sig = null
                 }
                 let signableText: string = canonicalize(signableObject)
-                let totalInputValue: number = 0
+                let totalInputValue: bigint = 0n
                 for (const input of object.inputs) {
                     if (!await db.exists(input.outpoint.txid)) {
                         await sendError(socket, 'UNKNOWN_OBJECT', `Transaction ${input.outpoint.txid} not found.`)
@@ -275,7 +272,7 @@ const validateObject = async (socket: Socket, object: types.Object) => {
                         return false
                     }
                     totalInputValue += outpoint.value
-                    console.log(`Validated input ${object.inputs.indexOf(input)} of transaction ${hashObject(object)}`)
+                    console.log(`Validated input ${object.inputs.indexOf(input)} of transaction ${hash}`)
                 }
 
                 if (new Set(object.inputs.map(i => JSON.stringify(i.outpoint))).size < object.inputs.length) {
@@ -283,7 +280,7 @@ const validateObject = async (socket: Socket, object: types.Object) => {
                     return false
                 }
 
-                let totalOutputValue: number = 0
+                let totalOutputValue: bigint = 0n
                 for (const output of object.outputs) {
                     totalOutputValue += output.value
                 }
@@ -291,10 +288,14 @@ const validateObject = async (socket: Socket, object: types.Object) => {
                     await sendError(socket, 'INVALID_TX_CONSERVATION', `Transaction has more outputs than inputs`)
                     return false
                 }
+                return true
+            } else if ('height' in object && object.height != undefined) {
+                console.log(`Transaction ${hash} is coinbase and therefore valid`)
+                return true
             } else {
-                console.log(`Transaction ${hashObject(object)} is coinbase and therefore valid`)
+                await sendError(socket, 'INVALID_FORMAT', `Transaction ${hash} is neither coinbase nor regular transaction`)
+                return false
             }
-            return true
     }
 }
 
@@ -391,9 +392,9 @@ const handleConnection = async (socket: Socket) => {
                                 await db.put(objectid, message.object)
                             }
                             if (objectid in handles) {
-                                let object = handles[objectid]
-                                if (object.resolve !== null) {
-                                    object.resolve(true)
+                                let handle = handles[objectid]
+                                if (handle.resolve !== null) {
+                                    handle.resolve(message.object)
                                 }
                             }
                             await Promise.all(
