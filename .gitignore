@@ -2,5 +2,6 @@
 /node_modules
 /build
 /*.pcap
+/*.log.gz
 /database
 /utxos
