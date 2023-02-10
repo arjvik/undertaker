@@ -20,6 +20,16 @@ function createEmitter<T>(): Emitter<T> {
     return new EventEmitter()
 }
 
+class ProtocolError extends Error {
+    errName: types.ErrorCode
+    errDescription: string
+    constructor(errName: types.ErrorCode, errDescription: string) {
+        super()
+        this.errName = errName
+        this.errDescription = errDescription
+    }
+}
+
 type Socket = PromiseSocket<net.Socket>
 
 const MAX_MESSAGE_LENGTH = 102400
@@ -117,7 +127,7 @@ const validateStringSignature = async (signature: string, message: string, publi
     return ed.verify(signatureBytes, messageBytes, publicKeyBytes)
 }
 
-const ensureObject = async (socket: Socket, objectid: string) => {
+const ensureObject = async (objectid: string) => {
     if (!await db.exists(objectid)) {
         Promise.all(
             [...sockets].map(async (receiverSocket) => {
@@ -134,8 +144,7 @@ const ensureObject = async (socket: Socket, objectid: string) => {
         ])
         const result: types.Object | null = await promise
         if (result == null) {
-            await sendError(socket, 'UNFINDABLE_OBJECT', `Unable find ${objectid} externally`)
-            return null
+            throw new ProtocolError('UNFINDABLE_OBJECT', `Unable find ${objectid} externally`)
         } else {
             return result
         }
@@ -143,14 +152,28 @@ const ensureObject = async (socket: Socket, objectid: string) => {
     return db.get(objectid)
 }
 
-const noNullElements = <T> (elems: (T | null)[]): elems is T[] => !elems.includes(null)
+const blockHeight = async (block: types.BlockObject, trustCoinbase: boolean = true): Promise<number> => {
+    if (block.previd === null) {
+        return 0
+    }
+    if (block.txids.length > 0 && trustCoinbase) {
+        const transaction = await db.get(block.txids[0]) as types.TransactionObject
+        if ('height' in transaction) {
+            return transaction.height
+        }
+    }
+    return (ensureObject(block.previd) as Promise<types.BlockObject>)
+            .then(blockHeight)
+            .then((height) => height + 1)
+}
+
 const allTrue = (elems: boolean[]): boolean => !elems.includes(false)
 
 const hasUTXO = (utxoSet: types.UTXO[], txid: string, index: number): boolean => !utxoSet.every((utxo: types.UTXO) => utxo.txid != txid || utxo.index != index)
 const getUTXO = (utxoSet: types.UTXO[], txid: string, index: number): types.UTXO => utxoSet.find((utxo: types.UTXO) => utxo.txid == txid && utxo.index == index) as types.UTXO
 const withoutUTXO = (utxoSet: types.UTXO[], txid: string, index: number): types.UTXO[] => utxoSet.filter((utxo: types.UTXO) => utxo.txid != txid || utxo.index != index)
 
-const validateObject = async (socket: Socket, object: types.Object) => {
+const validateObject = async (object: types.Object) => {
     const hash = hashObject(object)
     console.log(`Validating object ${hash}`)
     switch (object.type) {
@@ -158,38 +181,40 @@ const validateObject = async (socket: Socket, object: types.Object) => {
             console.log(`Attempting to verify block ${hash}: ${canonicalize(object)}`)
             if (hash >= object.T) {
                 console.log(`Block hash ${hash} >= T ${object.T}`)
-                await sendError(socket, 'INVALID_BLOCK_POW', `Block ${hash} does not meet proof of work requirement.`)
-                return false
+                throw new ProtocolError('INVALID_BLOCK_POW', `Block ${hash} does not meet proof of work requirement.`)
             }
-            const transactions = (await Promise.all(object.txids.map(async (txid) => ensureObject(socket, txid)))) as (types.TransactionObject | null)[]
-            if (noNullElements(transactions)) {
-                console.log(`All txids found in block ${hash}`)
-            } else {
-                console.log(`Not all txids found in block ${hash}`)
-                return false
+            const transactions = await Promise.all(object.txids.map(ensureObject))
+            if (!allTrue(transactions.map(tx => tx.type == 'transaction'))) {
+                throw new ProtocolError('INVALID_FORMAT', `Block ${hash} contains a non-transaction.`)
             }
             if (!allTrue(transactions.slice(1).map(tx => 'inputs' in tx))) {
                 console.log(`At least one transaction after the first in ${hash} is a coinbase transaction`)
-                sendError(socket, 'INVALID_BLOCK_COINBASE', 'Only the first transaction can be a coinbase transaction')
-                return false
+                throw new ProtocolError('INVALID_BLOCK_COINBASE', `Only the first transaction can be a coinbase transaction`)
             }
             const coinbase = transactions.length > 0 && 'height' in transactions[0] ? transactions[0] : null
             console.log(`Block ${hash} has coinbase ${coinbase}`)
             if (object.previd === null) {
                 if (hash !== GENESIS_BLOCK) {
                     console.log(`Block ${hash} does not have a previd but is not the genesis block`)
-                    await sendError(socket, 'INVALID_GENESIS', `Block ${hash} does not have a previd but is not the genesis block`)
-                    return false
+                    throw new ProtocolError('INVALID_GENESIS', `Block ${hash} does not have a previd but is not the genesis block`)
                 } else {
                     console.log(`Block really is the genesis block`)
                 }
             } else {
-                if (await ensureObject(socket, object.previd) == null) {
-                    console.log(`Unable to find previd ${object.previd} for block ${hash}`)
-                    return false
-                } else {
-                    console.log(`Successfully ensured knowledge of prev block ${object.previd} for block ${hash}`)
+                const prev = await ensureObject(object.previd)
+                if (prev.type != 'block') {
+                    console.log(`Block ${hash} has previd ${object.previd} but that is not a block`)
+                    throw new ProtocolError('INVALID_FORMAT', `Block ${hash} has previd ${object.previd} that is not a block`)
                 }
+                if (prev.created >= object.created) {
+                    console.log(`Block ${hash} has previd ${object.previd} but that has a greater or equal timestamp`)
+                    throw new ProtocolError('INVALID_BLOCK_TIMESTAMP', `Block ${hash} has previd ${object.previd} with a greater or equal timestamp`)
+                }
+                console.log(`Successfully ensured knowledge of prev block ${object.previd} for block ${hash}`)
+            }
+            if (object.created > Math.floor(Date.now() / 1000)) {
+                console.log(`Block ${hash} has timestamp ${object.created} that's in the future`)
+                throw new ProtocolError('INVALID_BLOCK_TIMESTAMP', `Block ${hash} has timestamp ${object.created} that's in the future (seen at ${Math.floor(Date.now() / 1000)})`)
             }
             let utxoSet = object.previd != null ? await utxos.get(object.previd) : []
             let transactionFees = 0n
@@ -202,8 +227,7 @@ const validateObject = async (socket: Socket, object: types.Object) => {
                     for (const input of tx.inputs) {
                         if (!hasUTXO(utxoSet, input.outpoint.txid, input.outpoint.index)) {
                             console.log(`UTXO ${input.outpoint.txid}:${input.outpoint.index} not found in UTXO set`)
-                            await sendError(socket, 'INVALID_TX_OUTPOINT', `UTXO ${input.outpoint.txid}:${input.outpoint.index} not found in UTXO set`)
-                            return false
+                            throw new ProtocolError('INVALID_TX_OUTPOINT', `UTXO ${input.outpoint.txid}:${input.outpoint.index} not found in UTXO set`)
                         }
                         transactionFees += BigInt(getUTXO(utxoSet, input.outpoint.txid, input.outpoint.index).value)
                         utxoSet = withoutUTXO(utxoSet, input.outpoint.txid, input.outpoint.index)
@@ -228,27 +252,30 @@ const validateObject = async (socket: Socket, object: types.Object) => {
                 console.log(`Beginning coinbase verification for block ${hash}`)
                 if (!hasUTXO(utxoSet, object.txids[0], 0)) {
                     console.log(`Coinbase transaction spent output within block ${hash}`)
-                    await sendError(socket, 'INVALID_TX_OUTPOINT', 'Cannot spend output of coinbase transaction within block')
-                    return false
+                    throw new ProtocolError('INVALID_TX_OUTPOINT', `Cannot spend output of coinbase transaction within block`)
                 } else {
-                    console.log(`Coinbase transaction does not spend output within block ${hash}`)
+                    console.log(`Coinbase transaction output not spent within block ${hash}`)
                 }
                 if (coinbase.outputs[0].value > transactionFees + BLOCK_REWARD) {
                     console.log(`Coinbase transaction steals too much in fees in block ${hash}`)
-                    await sendError(socket, 'INVALID_BLOCK_COINBASE', `BlockhashObject(object) ${hash} reward of ${BigInt(coinbase.outputs[0].value) - transactionFees} (excluding transaction fees of ${transactionFees}) exceeds max reward of ${BLOCK_REWARD}`)
-                    return false
+                    throw new ProtocolError('INVALID_BLOCK_COINBASE', `BlockhashObject(object) ${hash} reward of ${BigInt(coinbase.outputs[0].value) - transactionFees} (excluding transaction fees of ${transactionFees}) exceeds max reward of ${BLOCK_REWARD}`)
                 } else {
                     console.log(`Coinbase transaction takes fair fees in block ${hash}`)
+                }
+                if (await blockHeight(object, false) != coinbase.height) {
+                    console.log(`Coinbase transaction has incorrect height in block ${hash}`)
+                    throw new ProtocolError('INVALID_BLOCK_COINBASE', `Block ${hash} has coinbase transaction with incorrect height`)
+                } else {
+                    console.log(`Coinbase transaction has correct height ${coinbase.height} in block ${hash}`)
                 }
             } else {
                 console.log(`No coinbase transaction to verify in block ${hash}`)
             }
-            return true
+            break
         case 'transaction':
             console.log(`Attempting to verify transaction ${hash}: ${canonicalize(object)}`)
             if ('inputs' in object && object.inputs != undefined && 'height' in object && object.height != undefined) {
-                await sendError(socket, 'INVALID_FORMAT', `Transaction ${hash} is coinbase but has height`)
-                return false
+                throw new ProtocolError('INVALID_FORMAT', `Transaction ${hash} is coinbase but has height`)
             } else if ('inputs' in object && object.inputs != undefined) {
                 console.log(`Transaction ${hash} is not a coinbase`)
                 let signableObject: { type: "transaction", outputs: { value: number, pubkey: string, }[], inputs: { outpoint: { txid: string, index: number, }, sig: string | null, }[] }
@@ -260,30 +287,25 @@ const validateObject = async (socket: Socket, object: types.Object) => {
                 let totalInputValue: bigint = 0n
                 for (const input of object.inputs) {
                     if (!await db.exists(input.outpoint.txid)) {
-                        await sendError(socket, 'UNKNOWN_OBJECT', `Transaction ${input.outpoint.txid} not found.`)
-                        return false
+                        throw new ProtocolError('UNKNOWN_OBJECT', `Transaction ${input.outpoint.txid} not found.`)
                     }
                     const outpointOutput = await db.get(input.outpoint.txid)
                     if (outpointOutput.type != 'transaction') {
-                        await sendError(socket, 'INVALID_TX_OUTPOINT', `Object ${input.outpoint.txid} is not a transaction.`)
-                        return false
+                        throw new ProtocolError('INVALID_TX_OUTPOINT', `Object ${input.outpoint.txid} is not a transaction.`)
                     }
                     if (input.outpoint.index >= outpointOutput.outputs.length) {
-                        await sendError(socket, 'INVALID_TX_OUTPOINT', `Transaction ${input.outpoint.txid} has no output #${input.outpoint.index}.`)
-                        return false
+                        throw new ProtocolError('INVALID_TX_OUTPOINT', `Transaction ${input.outpoint.txid} has no output #${input.outpoint.index}.`)
                     }
                     const outpoint = outpointOutput.outputs[input.outpoint.index]
                     if (!await validateStringSignature(input.sig, signableText, outpoint.pubkey)) {
-                        await sendError(socket, 'INVALID_TX_SIGNATURE', `Signature ${input.sig} is invalid.`)
-                        return false
+                        throw new ProtocolError('INVALID_TX_SIGNATURE', `Signature ${input.sig} is invalid.`)
                     }
                     totalInputValue += BigInt(outpoint.value)
                     console.log(`Validated input ${object.inputs.indexOf(input)} of transaction ${hash}`)
                 }
 
                 if (new Set(object.inputs.map(i => JSON.stringify(i.outpoint))).size < object.inputs.length) {
-                    await sendError(socket, 'INVALID_TX_CONSERVATION', `Transaction has duplicate outpoints.`)
-                    return false
+                    throw new ProtocolError('INVALID_TX_CONSERVATION', `Transaction ${hash} has duplicate outpoints.`)
                 }
 
                 let totalOutputValue: bigint = 0n
@@ -291,17 +313,14 @@ const validateObject = async (socket: Socket, object: types.Object) => {
                     totalOutputValue += BigInt(output.value)
                 }
                 if (totalInputValue < totalOutputValue) {
-                    await sendError(socket, 'INVALID_TX_CONSERVATION', `Transaction has more outputs than inputs`)
-                    return false
+                    throw new ProtocolError('INVALID_TX_CONSERVATION', `Transaction ${hash} has more outputs than inputs`)
                 }
-                return true
             } else if ('height' in object && object.height != undefined) {
                 console.log(`Transaction ${hash} is coinbase and therefore valid`)
-                return true
             } else {
-                await sendError(socket, 'INVALID_FORMAT', `Transaction ${hash} is neither coinbase nor regular transaction`)
-                return false
+                throw new ProtocolError('INVALID_FORMAT', `Transaction ${hash} is neither coinbase nor regular transaction`)
             }
+            break
     }
 }
 
@@ -395,24 +414,21 @@ const handleConnection = async (socket: Socket) => {
                     case 'object':
                         const objectid: string = hashObject(message.object)
                         console.log(`Received object ${objectid} from ${remoteAddress}`)
-                        if (await validateObject(socket, message.object)) {
-                            console.log(`Validated object ${objectid} from ${remoteAddress}`)
-                            if (!await db.exists(objectid)) {
-                                await db.put(objectid, message.object)
-                            }
-                            objectReceivedEmitter.emit(objectid, message.object)
-                            await Promise.all(
-                                [...sockets].map(async (receiverSocket) => {
-                                    console.log(`Sending ihaveobject ${objectid} to ${receiverSocket.stream.remoteAddress}`)
-                                    return sendMessage(receiverSocket, {
-                                        type: 'ihaveobject',
-                                        objectid: objectid
-                                    })
-                                })
-                            )
-                        } else {
-                            console.log(`Failed to validate object ${objectid} from ${remoteAddress}`)
+                        await validateObject(message.object)
+                        console.log(`Validated object ${objectid} from ${remoteAddress}`)
+                        if (!await db.exists(objectid)) {
+                            await db.put(objectid, message.object)
                         }
+                        objectReceivedEmitter.emit(objectid, message.object)
+                        await Promise.all(
+                            [...sockets].map(async (receiverSocket) => {
+                                console.log(`Sending ihaveobject ${objectid} to ${receiverSocket.stream.remoteAddress}`)
+                                return sendMessage(receiverSocket, {
+                                    type: 'ihaveobject',
+                                    objectid: objectid
+                                })
+                            })
+                        )
                         break
                     case 'ihaveobject':
                         console.log(`Received ihaveobject ${message.objectid} from ${remoteAddress}`)
@@ -429,7 +445,9 @@ const handleConnection = async (socket: Socket) => {
                 console.log(`Storing partial message '${buffer}' from ${remoteAddress}`)
             }
         } catch (err: any) {
-            if (err instanceof SyntaxError || err instanceof ZodError) {
+            if (err instanceof ProtocolError) {
+                await sendError(socket, err.errName, err.errDescription)
+            } else if (err instanceof SyntaxError || err instanceof ZodError) {
                 await sendError(socket, 'INVALID_FORMAT', 'The format of the received message is invalid.')
             } else {
                 console.log(`!!INTERNAL_ERROR!! ${err} --- ${err.stack}`)
