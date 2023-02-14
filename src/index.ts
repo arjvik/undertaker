@@ -43,6 +43,8 @@ const BLOCK_REWARD = 50_000000000000n
 
 const GENESIS_BLOCK = "0000000052a0e645eca917ae1c196e0d0a4fb756747f29ef52594d68484bb5e2"
 
+const CHAINTIP = '<<CHAINTIP>>'
+
 const peers: Set<string> = new Set(['45.63.84.226:18018', '45.63.89.228:18018', '144.202.122.8:18018'])
 // const peers: Set<string> = new Set(['127.0.0.1:19019', '127.0.0.1:20020'])
 const sockets: Set<Socket> = new Set()
@@ -65,7 +67,8 @@ const getHostPort = (str: string) => {
 const sendMessage = async (socket: Socket, message: types.Message) => {
     let json: string = canonicalize(message)
     console.log(`Sending message ${json} to ${socket.stream.remoteAddress}:${socket.stream.remotePort}`)
-    return socket.write(json + '\n').catch(() => console.log(`Unable to send message ${json} to ${socket.stream.remoteAddress}:${socket.stream.remotePort}`))
+    return socket.write(json + '\n')
+                 .catch(() => console.log(`Unable to send message ${json} to ${socket.stream.remoteAddress}:${socket.stream.remotePort}`))
 }
 
 const disconnect = async (socket: Socket) => {
@@ -248,6 +251,7 @@ const validateObject = async (object: types.Object) => {
             }
             console.log(`Final UTXO set for block ${hash}: ${utxoSet}, transaction fees ${transactionFees}`)
             utxos.put(hash, utxoSet)
+            const height = await blockHeight(object, false)
             if (coinbase != null) {
                 console.log(`Beginning coinbase verification for block ${hash}`)
                 if (!hasUTXO(utxoSet, object.txids[0], 0)) {
@@ -262,7 +266,7 @@ const validateObject = async (object: types.Object) => {
                 } else {
                     console.log(`Coinbase transaction takes fair fees in block ${hash}`)
                 }
-                if (await blockHeight(object, false) != coinbase.height) {
+                if (height != coinbase.height) {
                     console.log(`Coinbase transaction has incorrect height in block ${hash}`)
                     throw new ProtocolError('INVALID_BLOCK_COINBASE', `Block ${hash} has coinbase transaction with incorrect height`)
                 } else {
@@ -270,6 +274,9 @@ const validateObject = async (object: types.Object) => {
                 }
             } else {
                 console.log(`No coinbase transaction to verify in block ${hash}`)
+            }
+            if (height > await db.get(CHAINTIP).then((chaintip) => blockHeight(chaintip as types.BlockObject, true))) {
+                await db.put(CHAINTIP, object)
             }
             break
         case 'transaction':
@@ -339,9 +346,8 @@ const handleConnection = async (socket: Socket) => {
         version: '0.9.0',
         agent: 'Undertaker (GitHub: arjvik/undertaker, commit {{GIT-HASH}})'
     })
-    await sendMessage(socket, {
-        type: 'getpeers'
-    })
+    await Promise.all((['getpeers', 'getchaintip'] as const)
+                 .map((type) => sendMessage(socket, {type: type})))
 
     let buffer: string = ''
 
@@ -438,6 +444,17 @@ const handleConnection = async (socket: Socket) => {
                                 objectid: message.objectid
                             })
                         }
+                        break
+                    case 'chaintip':
+                        console.log(`Recieved chaintip ${message.blockid} from ${remoteAddress}`)
+                        await ensureObject(message.blockid)
+                        break
+                    case 'getchaintip':
+                        console.log(`Received chaintip request from ${remoteAddress}`)
+                        if (await db.exists(CHAINTIP)) {
+                            await sendMessage(socket, {type: 'chaintip', blockid: hashObject(await db.get(CHAINTIP))})
+                        }
+                        break
                 }
             }
             if (buffer.length > 0) {
