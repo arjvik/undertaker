@@ -43,13 +43,13 @@ const BLOCK_REWARD = 50_000000000000n
 
 const GENESIS_BLOCK = "0000000052a0e645eca917ae1c196e0d0a4fb756747f29ef52594d68484bb5e2"
 
-const CHAINTIP = '<<CHAINTIP>>'
 
 const peers: Set<string> = new Set(['45.63.84.226:18018', '45.63.89.228:18018', '144.202.122.8:18018'])
 // const peers: Set<string> = new Set(['127.0.0.1:19019', '127.0.0.1:20020'])
 const sockets: Set<Socket> = new Set()
 const db: level<types.Object> = new level('./database')
 const utxos: level<types.UTXO[]> = new level('./utxos')
+const chaintip: level<{hash: types.Hash, block: types.BlockObject, height: number}> = new level('./chaintip')
 
 const objectReceivedEmitter = createEmitter<types.Object>()
 
@@ -275,8 +275,8 @@ const validateObject = async (object: types.Object) => {
             } else {
                 console.log(`No coinbase transaction to verify in block ${hash}`)
             }
-            if (height > await db.get(CHAINTIP).then((chaintip) => blockHeight(chaintip as types.BlockObject, true))) {
-                await db.put(CHAINTIP, object)
+            if (!await chaintip.exists('') || height > await (await chaintip.get('')).height) {
+                await chaintip.put('', {hash: hash, block: object, height: height})
             }
             break
         case 'transaction':
@@ -451,8 +451,9 @@ const handleConnection = async (socket: Socket) => {
                         break
                     case 'getchaintip':
                         console.log(`Received chaintip request from ${remoteAddress}`)
-                        if (await db.exists(CHAINTIP)) {
-                            await sendMessage(socket, {type: 'chaintip', blockid: hashObject(await db.get(CHAINTIP))})
+                        if (await chaintip.exists('')) {
+                            await chaintip.get('')
+                                          .then((tip) => sendMessage(socket, {type: 'chaintip', blockid: tip.hash}))
                         }
                         break
                 }
