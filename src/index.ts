@@ -37,7 +37,7 @@ const PORT = 18018
 const DESIRED_CONNECTIONS = 20
 const HELLO_TIMEOUT = 30_000
 const PARTIAL_MESSAGE_TIMEOUT = 10_000
-const FIND_OBJECT_TIMEOUT = 10_000
+const FIND_OBJECT_TIMEOUT = 4_000
 
 const BLOCK_REWARD = 50_000000000000n
 
@@ -132,7 +132,9 @@ const validateStringSignature = async (signature: string, message: string, publi
 }
 
 const ensureObject = async (objectid: string) => {
+    console.log(`Ensuring that object ${objectid} exists`)
     if (!await db.exists(objectid)) {
+        console.log(`Fetching object ${objectid} from peers`)
         Promise.all(
             [...sockets].map(async (receiverSocket) => {
                 console.log(`Sending getobject ${objectid} to ${receiverSocket.stream.remoteAddress}`)
@@ -148,10 +150,14 @@ const ensureObject = async (objectid: string) => {
         ])
         const result: types.Object | null = await promise
         if (result == null) {
+            console.log(`Could not find ${objectid} from peers`)
             throw new ProtocolError('UNFINDABLE_OBJECT', `Unable find ${objectid} externally`)
         } else {
+            console.log(`Found object ${objectid} from peers`)
             return result
         }
+    } else {
+        console.log(`Already have object ${objectid}`)
     }
     return db.get(objectid)
 }
@@ -187,16 +193,11 @@ const validateObject = async (object: types.Object) => {
                 console.log(`Block hash ${hash} >= T ${object.T}`)
                 throw new ProtocolError('INVALID_BLOCK_POW', `Block ${hash} does not meet proof of work requirement.`)
             }
-            const transactions = await Promise.all(object.txids.map(ensureObject))
-            if (!allTrue(transactions.map(tx => tx.type == 'transaction'))) {
-                throw new ProtocolError('INVALID_FORMAT', `Block ${hash} contains a non-transaction.`)
+            if (object.created > Math.floor(Date.now() / 1000)) {
+                console.log(`Block ${hash} has timestamp ${object.created} that's in the future`)
+                throw new ProtocolError('INVALID_BLOCK_TIMESTAMP', `Block ${hash} has timestamp ${object.created} that's in the future (seen at ${Math.floor(Date.now() / 1000)})`)
             }
-            if (!allTrue(transactions.slice(1).map(tx => 'inputs' in tx))) {
-                console.log(`At least one transaction after the first in ${hash} is a coinbase transaction`)
-                throw new ProtocolError('INVALID_BLOCK_COINBASE', `Only the first transaction can be a coinbase transaction`)
-            }
-            const coinbase = transactions.length > 0 && 'height' in transactions[0] ? transactions[0] : null
-            console.log(`Block ${hash} has coinbase ${coinbase}`)
+
             if (object.previd === null) {
                 if (hash !== GENESIS_BLOCK) {
                     console.log(`Block ${hash} does not have a previd but is not the genesis block`)
@@ -216,10 +217,18 @@ const validateObject = async (object: types.Object) => {
                 }
                 console.log(`Successfully ensured knowledge of prev block ${object.previd} for block ${hash}`)
             }
-            if (object.created > Math.floor(Date.now() / 1000)) {
-                console.log(`Block ${hash} has timestamp ${object.created} that's in the future`)
-                throw new ProtocolError('INVALID_BLOCK_TIMESTAMP', `Block ${hash} has timestamp ${object.created} that's in the future (seen at ${Math.floor(Date.now() / 1000)})`)
+
+            const transactions = await Promise.all(object.txids.map(ensureObject))
+            if (!allTrue(transactions.map(tx => tx.type == 'transaction'))) {
+                throw new ProtocolError('INVALID_FORMAT', `Block ${hash} contains a non-transaction.`)
             }
+            if (!allTrue(transactions.slice(1).map(tx => 'inputs' in tx))) {
+                console.log(`At least one transaction after the first in ${hash} is a coinbase transaction`)
+                throw new ProtocolError('INVALID_BLOCK_COINBASE', `Only the first transaction can be a coinbase transaction`)
+            }
+            const coinbase = transactions.length > 0 && 'height' in transactions[0] ? transactions[0] : null
+            console.log(`Block ${hash} has coinbase ${coinbase}`)
+
             let utxoSet = object.previd != null ? await utxos.get(object.previd) : []
             let transactionFees = 0n
             console.log(`Building UTXO set for block ${hash}`)
