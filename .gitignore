@@ -1,6 +1,7 @@
 /package-lock.json
-/node_modules
 /build
+/node_modules
+/rust_hasher/target
 /*.pcap
 /*.log.gz
 /database
