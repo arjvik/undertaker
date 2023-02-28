@@ -52,6 +52,9 @@ const db: level<types.Object> = new level('./database')
 const utxos: level<types.UTXO[]> = new level('./utxos')
 const chaintip: level<{hash: types.Hash, block: types.BlockObject, height: number}> = new level('./chaintip')
 
+let mempool_utxos: types.UTXO[] = []
+let mempool_txs: types.Hash[] = []
+
 const objectReceivedEmitter = createEmitter<types.Object>()
 
 const getHostPort = (str: string) => {
@@ -131,19 +134,22 @@ const validateStringSignature = async (signature: string, message: string, publi
     return ed.verify(signatureBytes, messageBytes, publicKeyBytes)
 }
 
+const requestObject = async (objectid: string) => 
+    Promise.all(
+        [...sockets].map(async (receiverSocket) => {
+            console.log(`Sending getobject ${objectid} to ${receiverSocket.stream.remoteAddress}`)
+            return sendMessage(receiverSocket, {
+                type: 'getobject',
+                objectid: objectid
+            })
+        })
+    )
+
 const ensureObject = async (objectid: string) => {
     console.log(`Ensuring that object ${objectid} exists`)
     if (!await db.exists(objectid)) {
         console.log(`Fetching object ${objectid} from peers`)
-        Promise.all(
-            [...sockets].map(async (receiverSocket) => {
-                console.log(`Sending getobject ${objectid} to ${receiverSocket.stream.remoteAddress}`)
-                return sendMessage(receiverSocket, {
-                    type: 'getobject',
-                    objectid: objectid
-                })
-            })
-        ).then(() => { })
+        requestObject(objectid).then(() => { })
         const promise: Promise<types.Object | null> = Promise.any([
             delay(FIND_OBJECT_TIMEOUT).then(() => null),
             new Promise(resolve => objectReceivedEmitter.once(objectid, resolve))
@@ -181,7 +187,36 @@ const allTrue = (elems: boolean[]): boolean => !elems.includes(false)
 
 const hasUTXO = (utxoSet: types.UTXO[], txid: string, index: number): boolean => !utxoSet.every((utxo: types.UTXO) => utxo.txid != txid || utxo.index != index)
 const getUTXO = (utxoSet: types.UTXO[], txid: string, index: number): types.UTXO => utxoSet.find((utxo: types.UTXO) => utxo.txid == txid && utxo.index == index) as types.UTXO
+const withUTXO = (utxoSet: types.UTXO[], txid: string, index: number, value: number): types.UTXO[] => [...utxoSet, { txid: txid, index: index, value: value }]
 const withoutUTXO = (utxoSet: types.UTXO[], txid: string, index: number): types.UTXO[] => utxoSet.filter((utxo: types.UTXO) => utxo.txid != txid || utxo.index != index)
+
+const updateUTXO = (utxoSet: types.UTXO[], tx: types.TransactionObject): types.UTXO[] => {
+    const txid = hashObject(tx)
+    if ('inputs' in tx) {
+        console.log(`Transaction ${txid} is a normal transaction`)
+        for (const input of tx.inputs) {
+            if (!hasUTXO(utxoSet, input.outpoint.txid, input.outpoint.index)) {
+                console.log(`UTXO ${input.outpoint.txid}:${input.outpoint.index} not found in UTXO set`)
+                throw new ProtocolError('INVALID_TX_OUTPOINT', `UTXO ${input.outpoint.txid}:${input.outpoint.index} not found in UTXO set`)
+            }
+            transactionFees += BigInt(getUTXO(utxoSet, input.outpoint.txid, input.outpoint.index).value)
+            utxoSet = withoutUTXO(utxoSet, input.outpoint.txid, input.outpoint.index)
+            console.log(`UTXO ${input.outpoint.txid}:${input.outpoint.index} found and removed from UTXO set`)
+        }
+        tx.outputs.forEach((output, index) => {
+            transactionFees -= BigInt(output.value)
+            utxoSet = withUTXO(utxoSet, txid, index, output.value)
+            console.log(`Created UTXO ${txid}:${index}`)
+        })
+    } else {
+        console.log(`Transaction ${txid} is a coinbase transaction`)
+        tx.outputs.forEach((output, index) => {
+            console.log(`Created UTXO ${txid}:${index} - this should only be printed once per block`)
+            utxoSet = withUTXO(utxoSet, txid, index, output.value)
+        })
+    }
+    return utxoSet
+}
 
 const validateObject = async (object: types.Object) => {
     const hash = hashObject(object)
@@ -235,29 +270,17 @@ const validateObject = async (object: types.Object) => {
             for (const [tx, txid, i] of transactions.map((e, i): [types.TransactionObject, string, number] => [e as types.TransactionObject, object.txids[i], i])) {
                 console.log(`Current UTXO set: ${utxoSet}, current transaction fees ${transactionFees}`)
                 console.log(`Handling transaction #${i+1}: ${txid}`)
+                utxoSet = updateUTXO(utxoSet, tx)
+
                 if ('inputs' in tx) {
-                    console.log(`Transaction ${txid} is a normal transaction`)
                     for (const input of tx.inputs) {
-                        if (!hasUTXO(utxoSet, input.outpoint.txid, input.outpoint.index)) {
-                            console.log(`UTXO ${input.outpoint.txid}:${input.outpoint.index} not found in UTXO set`)
-                            throw new ProtocolError('INVALID_TX_OUTPOINT', `UTXO ${input.outpoint.txid}:${input.outpoint.index} not found in UTXO set`)
-                        }
                         transactionFees += BigInt(getUTXO(utxoSet, input.outpoint.txid, input.outpoint.index).value)
-                        utxoSet = withoutUTXO(utxoSet, input.outpoint.txid, input.outpoint.index)
-                        console.log(`UTXO ${input.outpoint.txid}:${input.outpoint.index} found and removed from UTXO set`)
                     }
-                    tx.outputs.forEach((output, index) => {
+                    for (const output of tx.outputs) {
                         transactionFees -= BigInt(output.value)
-                        utxoSet.push({txid: txid, index: index, value: output.value})
-                        console.log(`Created UTXO ${txid}:${index}`)
-                    })
-                } else {
-                    console.log(`Transaction ${txid} is a coinbase transaction`)
-                    tx.outputs.forEach((output, index) => {
-                        console.log(`Created UTXO ${txid}:${index} - this should only be printed once per block`)
-                        utxoSet.push({txid: txid, index: index, value: output.value})
-                    })
+                    }
                 }
+
             }
             console.log(`Final UTXO set for block ${hash}: ${utxoSet}, transaction fees ${transactionFees}`)
             utxos.put(hash, utxoSet)
@@ -356,7 +379,7 @@ const handleConnection = async (socket: Socket) => {
         version: '0.9.0',
         agent: 'Undertaker (GitHub: arjvik/undertaker, commit {{GIT-HASH}})'
     })
-    await Promise.all((['getpeers', 'getchaintip'] as const)
+    await Promise.all((['getpeers', 'getchaintip', 'getmempool'] as const)
                  .map((type) => sendMessage(socket, {type: type})))
 
     let buffer: string = ''
@@ -465,6 +488,10 @@ const handleConnection = async (socket: Socket) => {
                             await chaintip.get(CHAINTIP)
                                           .then((tip) => sendMessage(socket, {type: 'chaintip', blockid: tip.hash}))
                         }
+                        break
+                    case 'mempool':
+                        console.log(`Recieved mempool ${message.txids} from ${remoteAddress}`)
+                        await Promise.all(message.txids.map(requestObject))
                         break
                 }
             }
