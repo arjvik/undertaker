@@ -1,15 +1,15 @@
 import * as ed from '@noble/ed25519'
 import { createHash } from 'blake2'
 import delay from 'delay'
+import { EventEmitter } from 'events'
 import isValidDomain from 'is-valid-domain'
 import { canonicalize } from 'json-canonicalize'
 import level from 'level-ts'
 import * as net from 'net'
+import 'promise-any-polyfill'
 import PromiseSocket from 'promise-socket'
 import { ZodError } from 'zod'
 import * as types from './types'
-import 'promise-any-polyfill'
-import { EventEmitter } from 'events'
 
 interface Emitter<T> {
     on(event: string, listener: (arg: T) => void): this
@@ -62,6 +62,7 @@ let mempoolTXs: types.Hash[] = []
     if (await chaintip.exists(CHAINTIP)) {
         mempoolUTXOs = [...await utxos.get((await chaintip.get(CHAINTIP)).hash)]
     }
+    console.log(`Initialized very first mempool UTXO set to ${JSON.stringify(mempoolUTXOs)}`)
 })().then(() => { })
 
 const objectReceivedEmitter = createEmitter<types.Object>()
@@ -242,7 +243,7 @@ const forgottenTransactions = async (oldChaintip: types.Chaintip | null, newChai
         let newAncestor = newChaintip.hash;
         // Naive Lifting algorithm
         for (let i = 0; i < newChaintip.height - oldChaintip.height; i++) {
-            newAncestor = (await db.get(newAncestor) as types.BlockObject).previd as string
+            newAncestor = (newAncestor == newChaintip.hash ? newChaintip.block : await db.get(newAncestor) as types.BlockObject).previd as string
         }
         oldAncestor = oldChaintip.hash;
         while (oldAncestor != newAncestor) {
@@ -253,7 +254,7 @@ const forgottenTransactions = async (oldChaintip: types.Chaintip | null, newChai
 
     let currentBlockHash: types.Hash | null = newChaintip.hash
     while (currentBlockHash != oldAncestor) {
-        const currentBlock = await db.get(currentBlockHash as string) as types.BlockObject
+        const currentBlock: types.BlockObject = currentBlockHash == newChaintip.hash ? newChaintip.block : await db.get(currentBlockHash as string) as types.BlockObject
         txids = [...currentBlock.txids, ...txids]
         currentBlockHash = currentBlock.previd
     }
@@ -261,12 +262,14 @@ const forgottenTransactions = async (oldChaintip: types.Chaintip | null, newChai
 }
 
 const applyTransaction = (tx: types.TransactionObject) => {
+    console.log(`Attempting to apply transaction ${tx} to mempool, but will throw errors here (to possibly be caught by above)`)
     mempoolUTXOs = updateUTXO(mempoolUTXOs, tx)
     mempoolTXs.push(hashObject(tx))
+    console.log(`Successfully applied transaction ${tx} to mempool without throwing errors`)
 }
 
 const attemptApplyTransaction = (tx: types.TransactionObject, blockHashForLogging: string) => {
-    console.log(`Applying transaction ${tx} to mempool for reorg to block ${blockHashForLogging}`)
+    console.log(`Attempting to apply transaction ${tx} to mempool for reorg to block ${blockHashForLogging} (but will catch errors)`)
     try {
         applyTransaction(tx)        
         console.log(`Successfully applied transaction ${tx} to mempool for reorg to block ${blockHashForLogging}`)
@@ -330,11 +333,11 @@ const validateObject = async (object: types.Object) => {
             let transactionFees = 0n
             console.log(`Building UTXO set for block ${hash}`)
             for (const [tx, txid, i] of transactions.map((e, i): [types.TransactionObject, string, number] => [e as types.TransactionObject, object.txids[i], i])) {
-                console.log(`Current UTXO set: ${utxoSet}, current transaction fees ${transactionFees}`)
+                console.log(`Current UTXO set: ${JSON.stringify(utxoSet)}, current transaction fees ${transactionFees}`)
                 console.log(`Handling transaction #${i+1}: ${txid}`)
                 utxoSet = updateUTXO(utxoSet, tx, (fee) => transactionFees += fee)
             }
-            console.log(`Final UTXO set for block ${hash}: ${utxoSet}, transaction fees ${transactionFees}`)
+            console.log(`Final UTXO set for block ${hash}: ${JSON.stringify(utxoSet)}, transaction fees ${transactionFees}`)
             utxos.put(hash, utxoSet)
             const height = await blockHeight(object, false)
             if (coinbase != null) {
@@ -374,7 +377,7 @@ const validateObject = async (object: types.Object) => {
                 for (const txid of transactionsToApply) {
                     attemptApplyTransaction(await db.get(txid) as types.TransactionObject, hash)
                 }
-                console.log(`New mempool for ${hash}: ${mempoolTXs}, UTXOs: ${mempoolUTXOs}`)
+                console.log(`New mempool for ${hash}: ${mempoolTXs}, UTXOs: ${JSON.stringify(mempoolUTXOs)}`)
             }
             break
         case 'transaction':
@@ -420,14 +423,15 @@ const validateObject = async (object: types.Object) => {
                 if (totalInputValue < totalOutputValue) {
                     throw new ProtocolError('INVALID_TX_CONSERVATION', `Transaction ${hash} has more outputs than inputs`)
                 }
+
+                console.log(`Attempting to add transaction ${hash} to mempool (because non-coinbase)`)
+                applyTransaction(object)
+                console.log(`Succeeded to add ${hash} to mempool, new mempool: ${mempoolTXs} and UTXOs: ${JSON.stringify(mempoolUTXOs)}`)
             } else if ('height' in object && object.height != undefined) {
-                console.log(`Transaction ${hash} is coinbase and therefore valid`)
+                console.log(`Transaction ${hash} is coinbase and therefore valid, however we won't attempt to add to mempool`)
             } else {
                 throw new ProtocolError('INVALID_FORMAT', `Transaction ${hash} is neither coinbase nor regular transaction`)
             }
-            console.log(`Attempting to add transaction ${hash} to mempool`)
-            applyTransaction(object)
-            console.log(`Succeeded to add ${hash} to mempool, new mempool: ${mempoolTXs} and UTXOs: ${mempoolUTXOs}`)
             break
     }
 }
