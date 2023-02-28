@@ -50,10 +50,17 @@ const peers: Set<string> = new Set(['45.63.84.226:18018', '45.63.89.228:18018', 
 const sockets: Set<Socket> = new Set()
 const db: level<types.Object> = new level('./database')
 const utxos: level<types.UTXO[]> = new level('./utxos')
-const chaintip: level<{hash: types.Hash, block: types.BlockObject, height: number}> = new level('./chaintip')
+const chaintip: level<types.Chaintip> = new level('./chaintip')
 
-let mempool_utxos: types.UTXO[] = []
-let mempool_txs: types.Hash[] = []
+let mempoolUTXOs: types.UTXO[] = []
+let mempoolTXs: types.Hash[] = []
+
+(async () => {
+    // Initialize mempool UTXO set to UTXOset of current chaintip
+    if (await chaintip.exists(CHAINTIP)) {
+        mempoolUTXOs = [...await utxos.get((await chaintip.get(CHAINTIP)).hash)]
+    }
+})()
 
 const objectReceivedEmitter = createEmitter<types.Object>()
 
@@ -152,7 +159,7 @@ const ensureObject = async (objectid: string) => {
         requestObject(objectid).then(() => { })
         const promise: Promise<types.Object | null> = Promise.any([
             delay(FIND_OBJECT_TIMEOUT).then(() => null),
-            new Promise(resolve => objectReceivedEmitter.once(objectid, resolve))
+            new Promise((resolve) => objectReceivedEmitter.once(objectid, resolve))
         ])
         const result: types.Object | null = await promise
         if (result == null) {
@@ -190,7 +197,7 @@ const getUTXO = (utxoSet: types.UTXO[], txid: string, index: number): types.UTXO
 const withUTXO = (utxoSet: types.UTXO[], txid: string, index: number, value: number): types.UTXO[] => [...utxoSet, { txid: txid, index: index, value: value }]
 const withoutUTXO = (utxoSet: types.UTXO[], txid: string, index: number): types.UTXO[] => utxoSet.filter((utxo: types.UTXO) => utxo.txid != txid || utxo.index != index)
 
-const updateUTXO = (utxoSet: types.UTXO[], tx: types.TransactionObject): types.UTXO[] => {
+const updateUTXO = (utxoSet: types.UTXO[], tx: types.TransactionObject, txFeeHandler: ((txfee: bigint) => void) | null = null): types.UTXO[] => {
     const txid = hashObject(tx)
     if ('inputs' in tx) {
         console.log(`Transaction ${txid} is a normal transaction`)
@@ -199,12 +206,16 @@ const updateUTXO = (utxoSet: types.UTXO[], tx: types.TransactionObject): types.U
                 console.log(`UTXO ${input.outpoint.txid}:${input.outpoint.index} not found in UTXO set`)
                 throw new ProtocolError('INVALID_TX_OUTPOINT', `UTXO ${input.outpoint.txid}:${input.outpoint.index} not found in UTXO set`)
             }
-            transactionFees += BigInt(getUTXO(utxoSet, input.outpoint.txid, input.outpoint.index).value)
+            if (txFeeHandler != null) {
+                txFeeHandler(BigInt(getUTXO(utxoSet, input.outpoint.txid, input.outpoint.index).value))
+            }
             utxoSet = withoutUTXO(utxoSet, input.outpoint.txid, input.outpoint.index)
             console.log(`UTXO ${input.outpoint.txid}:${input.outpoint.index} found and removed from UTXO set`)
         }
         tx.outputs.forEach((output, index) => {
-            transactionFees -= BigInt(output.value)
+            if (txFeeHandler != null) {
+                txFeeHandler(-BigInt(output.value))
+            }
             utxoSet = withUTXO(utxoSet, txid, index, output.value)
             console.log(`Created UTXO ${txid}:${index}`)
         })
@@ -216,6 +227,55 @@ const updateUTXO = (utxoSet: types.UTXO[], tx: types.TransactionObject): types.U
         })
     }
     return utxoSet
+}
+
+const forgottenTransactions = async (oldChaintip: types.Chaintip | null, newChaintip: types.Chaintip): Promise<types.Hash[]> => {
+    console.log(`Finding forgotten transactions between ${oldChaintip?.hash} and ${newChaintip.hash} (height ${oldChaintip?.height} to ${newChaintip.height})`)
+    let txids: types.Hash[] = []
+    let oldAncestor: types.Hash | null = null
+    if (oldChaintip == null) {
+        // Forgotten all transactions in chain; there is no common ancestor
+    } else {
+        // Find common ancestor
+        let newAncestor = newChaintip.hash;
+        // Naive Lifting algorithm
+        for (let i = 0; i < newChaintip.height - oldChaintip.height; i++) {
+            newAncestor = (await db.get(newAncestor) as types.BlockObject).previd as string
+        }
+        oldAncestor = oldChaintip.hash;
+        while (oldAncestor != newAncestor) {
+            oldAncestor = (await db.get(oldAncestor) as types.BlockObject).previd as string
+            newAncestor = (await db.get(newAncestor) as types.BlockObject).previd as string
+        }
+    }
+
+    let currentBlockHash: types.Hash | null = newChaintip.hash
+    while (currentBlockHash != oldAncestor) {
+        const currentBlock = await db.get(currentBlockHash as string) as types.BlockObject
+        txids = [...currentBlock.txids, ...txids]
+        currentBlockHash = currentBlock.previd
+    }
+    return txids
+}
+
+const applyTransaction = (tx: types.TransactionObject) => {
+    mempoolUTXOs = updateUTXO(mempoolUTXOs, tx)
+    mempoolTXs.push(hashObject(tx))
+}
+
+const attemptApplyTransaction = (tx: types.TransactionObject, blockHashForLogging: string) => {
+    console.log(`Applying transaction ${tx} to mempool for reorg to block ${blockHashForLogging}`)
+    try {
+        applyTransaction(tx)        
+        console.log(`Successfully applied transaction ${tx} to mempool for reorg to block ${blockHashForLogging}`)
+    } catch (e) {
+        if (e instanceof ProtocolError && e.errName == 'INVALID_TX_OUTPOINT') {
+            console.log(`Failed to apply transaction ${tx} to mempool for reorg to block ${blockHashForLogging}: ${e}`)
+        } else {
+            console.log(`Caught unrelated error ${e} while applying transaction ${tx} to mempool for reorg to block ${blockHashForLogging}, aborting`)
+            throw e
+        }
+    }
 }
 
 const validateObject = async (object: types.Object) => {
@@ -254,10 +314,10 @@ const validateObject = async (object: types.Object) => {
             }
 
             const transactions = await Promise.all(object.txids.map(ensureObject))
-            if (!allTrue(transactions.map(tx => tx.type == 'transaction'))) {
+            if (!allTrue(transactions.map((tx) => tx.type == 'transaction'))) {
                 throw new ProtocolError('INVALID_FORMAT', `Block ${hash} contains a non-transaction.`)
             }
-            if (!allTrue(transactions.slice(1).map(tx => 'inputs' in tx))) {
+            if (!allTrue(transactions.slice(1).map((tx) => 'inputs' in tx))) {
                 console.log(`At least one transaction after the first in ${hash} is a coinbase transaction`)
                 throw new ProtocolError('INVALID_BLOCK_COINBASE', `Only the first transaction can be a coinbase transaction`)
             }
@@ -270,17 +330,7 @@ const validateObject = async (object: types.Object) => {
             for (const [tx, txid, i] of transactions.map((e, i): [types.TransactionObject, string, number] => [e as types.TransactionObject, object.txids[i], i])) {
                 console.log(`Current UTXO set: ${utxoSet}, current transaction fees ${transactionFees}`)
                 console.log(`Handling transaction #${i+1}: ${txid}`)
-                utxoSet = updateUTXO(utxoSet, tx)
-
-                if ('inputs' in tx) {
-                    for (const input of tx.inputs) {
-                        transactionFees += BigInt(getUTXO(utxoSet, input.outpoint.txid, input.outpoint.index).value)
-                    }
-                    for (const output of tx.outputs) {
-                        transactionFees -= BigInt(output.value)
-                    }
-                }
-
+                utxoSet = updateUTXO(utxoSet, tx, (fee) => transactionFees += fee)
             }
             console.log(`Final UTXO set for block ${hash}: ${utxoSet}, transaction fees ${transactionFees}`)
             utxos.put(hash, utxoSet)
@@ -308,8 +358,21 @@ const validateObject = async (object: types.Object) => {
             } else {
                 console.log(`No coinbase transaction to verify in block ${hash}`)
             }
-            if (!await chaintip.exists(CHAINTIP) || height > await (await chaintip.get(CHAINTIP)).height) {
-                await chaintip.put(CHAINTIP, {hash: hash, block: object, height: height})
+            if (!await chaintip.exists(CHAINTIP) || height > (await chaintip.get(CHAINTIP)).height) {
+                console.log(`CHAIN REORG! Block ${hash} is a new chaintip of height ${height}, beating out old chaintip ${await chaintip.exists(CHAINTIP) ? (await chaintip.get(CHAINTIP)).hash : null}`)
+                const old_chaintip = await chaintip.exists(CHAINTIP) ? await chaintip.get(CHAINTIP) : null
+                const new_chaintip = {hash: hash, block: object, height: height}
+                await chaintip.put(CHAINTIP, new_chaintip)
+                console.log(`Computing new mempool after chain reorg to block ${hash}`)
+                mempoolUTXOs = [...utxoSet]
+                const transactionsToApply = [...await forgottenTransactions(old_chaintip, new_chaintip), ...mempoolTXs]
+                console.log(`Transactions to apply in order on top of block ${hash} mempool: ${transactionsToApply}`)
+                mempoolTXs = []
+                console.log(`Cleared mempool for ${hash}`)
+                for (const txid of transactionsToApply) {
+                    attemptApplyTransaction(await db.get(txid) as types.TransactionObject, hash)
+                }
+                console.log(`New mempool for ${hash}: ${mempoolTXs}, UTXOs: ${mempoolUTXOs}`)
             }
             break
         case 'transaction':
@@ -344,7 +407,7 @@ const validateObject = async (object: types.Object) => {
                     console.log(`Validated input ${object.inputs.indexOf(input)} of transaction ${hash}`)
                 }
 
-                if (new Set(object.inputs.map(i => JSON.stringify(i.outpoint))).size < object.inputs.length) {
+                if (new Set(object.inputs.map((i) => JSON.stringify(i.outpoint))).size < object.inputs.length) {
                     throw new ProtocolError('INVALID_TX_CONSERVATION', `Transaction ${hash} has duplicate outpoints.`)
                 }
 
@@ -360,6 +423,9 @@ const validateObject = async (object: types.Object) => {
             } else {
                 throw new ProtocolError('INVALID_FORMAT', `Transaction ${hash} is neither coinbase nor regular transaction`)
             }
+            console.log(`Attempting to add transaction ${hash} to mempool`)
+            applyTransaction(object)
+            console.log(`Succeeded to add ${hash} to mempool, new mempool: ${mempoolTXs} and UTXOs: ${mempoolUTXOs}`)
             break
     }
 }
@@ -523,6 +589,9 @@ const handleConnection = async (socket: Socket) => {
 }
 
 const server = net.createServer(async (socket: net.Socket) => await handleConnection(new PromiseSocket(socket)))
+
+await initMempool()
+
 server.on('error', (err) => {
     console.log(`!!SERVER ERROR!! ${err}`)
 })
@@ -535,4 +604,4 @@ for (const peer of peers) {
     connectToPeer(peer).then(() => { })
 }
 
-process.on('SIGINT', () => process.exit(0));
+process.on('SIGINT', () => process.exit(0))

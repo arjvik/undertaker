@@ -123,3 +123,5 @@ export type ChainTipMessage = z.infer<typeof ChainTipMessage>
 
 export const Message = z.discriminatedUnion('type', [HelloMessage, ErrorMessage, GetPeersMessage, PeersMessage, GetObjectMessage, IHaveObjectMessage, ObjectMessage, GetMempoolMessage, MempoolMessage, GetChainTipMessage, ChainTipMessage])
 export type Message = z.infer<typeof Message>
+
+export type Chaintip = {hash: Hash, block: BlockObject, height: number}
