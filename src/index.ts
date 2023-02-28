@@ -55,12 +55,14 @@ const chaintip: level<types.Chaintip> = new level('./chaintip')
 let mempoolUTXOs: types.UTXO[] = []
 let mempoolTXs: types.Hash[] = []
 
+;
 (async () => {
     // Initialize mempool UTXO set to UTXOset of current chaintip
+    // Hack: because we lack top-level-await, we just pray it finishes fast enough
     if (await chaintip.exists(CHAINTIP)) {
         mempoolUTXOs = [...await utxos.get((await chaintip.get(CHAINTIP)).hash)]
     }
-})()
+})().then(() => { })
 
 const objectReceivedEmitter = createEmitter<types.Object>()
 
@@ -589,8 +591,6 @@ const handleConnection = async (socket: Socket) => {
 }
 
 const server = net.createServer(async (socket: net.Socket) => await handleConnection(new PromiseSocket(socket)))
-
-await initMempool()
 
 server.on('error', (err) => {
     console.log(`!!SERVER ERROR!! ${err}`)
