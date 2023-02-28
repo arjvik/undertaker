@@ -561,6 +561,10 @@ const handleConnection = async (socket: Socket) => {
                         console.log(`Recieved mempool ${message.txids} from ${remoteAddress}`)
                         await Promise.all(message.txids.map(requestObject))
                         break
+                    case 'getmempool':
+                        console.log(`Sending mempool to ${remoteAddress}`)
+                        await sendMessage(socket, {type: 'mempool', txids: mempoolTXs})
+                        break
                 }
             }
             if (buffer.length > 0) {
