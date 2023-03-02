@@ -32,7 +32,7 @@ class ProtocolError extends Error {
 
 type Socket = PromiseSocket<net.Socket>
 
-const MAX_MESSAGE_LENGTH = 102400
+const MAX_MESSAGE_LENGTH = 1024_000_000
 const PORT = 18018
 const DESIRED_CONNECTIONS = 20
 const HELLO_TIMEOUT = 30_000
@@ -261,23 +261,26 @@ const forgottenTransactions = async (oldChaintip: types.Chaintip | null, newChai
     return txids
 }
 
-const applyTransaction = (tx: types.TransactionObject) => {
-    console.log(`Attempting to apply transaction ${tx} to mempool, but will throw errors here (to possibly be caught by above)`)
-    mempoolUTXOs = updateUTXO(mempoolUTXOs, tx)
-    mempoolTXs.push(hashObject(tx))
-    console.log(`Successfully applied transaction ${tx} to mempool without throwing errors`)
+const applyTransaction = (tx: types.TransactionObject, currentUTXOs: types.UTXO[], currentTXs: types.Hash[]) => {
+    console.log(`Attempting to apply transaction ${JSON.stringify(tx)} to mempool, but will throw errors here (to possibly be caught by above)`)
+    currentUTXOs = updateUTXO(currentUTXOs, tx)
+    currentTXs = [...currentTXs, hashObject(tx)]
+    console.log(`Successfully applied transaction ${JSON.stringify(tx)} to mempool without throwing errors`)
+    return [currentUTXOs, currentTXs] as const
 }
 
-const attemptApplyTransaction = (tx: types.TransactionObject, blockHashForLogging: string) => {
-    console.log(`Attempting to apply transaction ${tx} to mempool for reorg to block ${blockHashForLogging} (but will catch errors)`)
+const attemptApplyTransaction = (tx: types.TransactionObject, currentUTXOs: types.UTXO[], currentTXs: types.Hash[], blockHashForLogging: string) => {
+    console.log(`Attempting to apply transaction ${JSON.stringify(tx)} to mempool for reorg to block ${blockHashForLogging} (but will catch errors)`)
     try {
-        applyTransaction(tx)        
-        console.log(`Successfully applied transaction ${tx} to mempool for reorg to block ${blockHashForLogging}`)
+        [currentUTXOs, currentTXs] = applyTransaction(tx, currentUTXOs, currentTXs)
+        console.log(`Successfully applied transaction ${JSON.stringify(tx)} to mempool for reorg to block ${blockHashForLogging}`)
+        return [currentUTXOs, currentTXs] as const
     } catch (e) {
         if (e instanceof ProtocolError && e.errName == 'INVALID_TX_OUTPOINT') {
-            console.log(`Failed to apply transaction ${tx} to mempool for reorg to block ${blockHashForLogging}: ${e}`)
+            console.log(`Failed to apply transaction ${JSON.stringify(tx)} to mempool for reorg to block ${blockHashForLogging}: ${e}`)
+            return [currentUTXOs, currentTXs] as const
         } else {
-            console.log(`Caught unrelated error ${e} while applying transaction ${tx} to mempool for reorg to block ${blockHashForLogging}, aborting`)
+            console.log(`Caught unrelated error ${e} while applying transaction ${JSON.stringify(tx)} to mempool for reorg to block ${blockHashForLogging}, aborting`)
             throw e
         }
     }
@@ -367,17 +370,21 @@ const validateObject = async (object: types.Object) => {
                 console.log(`CHAIN REORG! Block ${hash} is a new chaintip of height ${height}, beating out old chaintip ${await chaintip.exists(CHAINTIP) ? (await chaintip.get(CHAINTIP)).hash : null}`)
                 const old_chaintip = await chaintip.exists(CHAINTIP) ? await chaintip.get(CHAINTIP) : null
                 const new_chaintip = {hash: hash, block: object, height: height}
-                await chaintip.put(CHAINTIP, new_chaintip)
                 console.log(`Computing new mempool after chain reorg to block ${hash}`)
-                mempoolUTXOs = [...utxoSet]
+                let newMempoolUTXOs = [...utxoSet]
                 const transactionsToApply = [...await forgottenTransactions(old_chaintip, new_chaintip), ...mempoolTXs]
                 console.log(`Transactions to apply in order on top of block ${hash} mempool: ${transactionsToApply}`)
-                mempoolTXs = []
+                let newMempoolTXs: types.Hash[] = []
                 console.log(`Cleared mempool for ${hash}`)
                 for (const txid of transactionsToApply) {
-                    attemptApplyTransaction(await db.get(txid) as types.TransactionObject, hash)
+                    [newMempoolUTXOs, newMempoolTXs] = attemptApplyTransaction(await db.get(txid) as types.TransactionObject, newMempoolUTXOs, newMempoolTXs, hash);
                 }
                 console.log(`New mempool for ${hash}: ${mempoolTXs}, UTXOs: ${JSON.stringify(mempoolUTXOs)}`)
+
+                await chaintip.put(CHAINTIP, new_chaintip).then(() => {
+                    mempoolUTXOs = newMempoolUTXOs
+                    mempoolTXs = newMempoolTXs
+                })
             }
             break
         case 'transaction':
@@ -386,7 +393,7 @@ const validateObject = async (object: types.Object) => {
                 throw new ProtocolError('INVALID_FORMAT', `Transaction ${hash} is coinbase but has height`)
             } else if ('inputs' in object && object.inputs != undefined) {
                 console.log(`Transaction ${hash} is not a coinbase`)
-                let signableObject: { type: "transaction", outputs: { value: number, pubkey: string, }[], inputs: { outpoint: { txid: string, index: number, }, sig: string | null, }[] }
+                let signableObject: { type: 'transaction', outputs: { value: number, pubkey: string, }[], inputs: { outpoint: { txid: string, index: number, }, sig: string | null, }[] }
                     = JSON.parse(JSON.stringify(object)) // deep copy hack
                 for (const input of signableObject.inputs) {
                     input.sig = null
@@ -423,10 +430,6 @@ const validateObject = async (object: types.Object) => {
                 if (totalInputValue < totalOutputValue) {
                     throw new ProtocolError('INVALID_TX_CONSERVATION', `Transaction ${hash} has more outputs than inputs`)
                 }
-
-                console.log(`Attempting to add transaction ${hash} to mempool (because non-coinbase)`)
-                applyTransaction(object)
-                console.log(`Succeeded to add ${hash} to mempool, new mempool: ${mempoolTXs} and UTXOs: ${JSON.stringify(mempoolUTXOs)}`)
             } else if ('height' in object && object.height != undefined) {
                 console.log(`Transaction ${hash} is coinbase and therefore valid, however we won't attempt to add to mempool`)
             } else {
@@ -455,20 +458,19 @@ const handleConnection = async (socket: Socket) => {
                  .map((type) => sendMessage(socket, {type: type})))
 
     let buffer: string = ''
+    let json: string = ''
 
     socket.stream.on('data', async (chunk) => {
         // console.log(`Received data ${chunk} from ${remoteAddress}`)
         try {
             buffer += chunk.toString(undefined, 0, MAX_MESSAGE_LENGTH)
             buffer = buffer.substring(0, MAX_MESSAGE_LENGTH)
-            let eom = buffer.indexOf('\n')
-            if (eom != -1) {
+            if (buffer.indexOf('\n') != -1) {
                 clearTimeout(timeoutID)
             }
-            while (eom != -1) {
-                const json = buffer.substring(0, eom)
-                buffer = buffer.substring(eom + 1)
-                eom = buffer.indexOf('\n')
+            while (buffer.indexOf('\n') != -1) {
+                json = buffer.substring(0, buffer.indexOf('\n'))
+                buffer = buffer.substring(buffer.indexOf('\n') + 1)
 
                 console.log(`Received message ${json} from ${remoteAddress}`)
                 const message: types.Message = types.Message.parse(JSON.parse(json))
@@ -531,7 +533,7 @@ const handleConnection = async (socket: Socket) => {
                             await db.put(objectid, message.object)
                         }
                         objectReceivedEmitter.emit(objectid, message.object)
-                        await Promise.all(
+                        Promise.all(
                             [...sockets].map(async (receiverSocket) => {
                                 console.log(`Sending ihaveobject ${objectid} to ${receiverSocket.stream.remoteAddress}`)
                                 return sendMessage(receiverSocket, {
@@ -539,7 +541,16 @@ const handleConnection = async (socket: Socket) => {
                                     objectid: objectid
                                 })
                             })
-                        )
+                        ).then(() => {})
+
+                        if (message.object.type == 'transaction' && 'inputs' in message.object && message.object.inputs != undefined) {
+                            const hash = hashObject(message.object)
+                            console.log(`Attempting to add just-validated transaction ${hash} to mempool (because non-coinbase)`)
+                            const [newMempoolUTXOs, newMempoolTXs] = applyTransaction(message.object, mempoolUTXOs, mempoolTXs)
+                            mempoolUTXOs = newMempoolUTXOs
+                            mempoolTXs = newMempoolTXs
+                            console.log(`Succeeded to add just-validated transaction ${hash} to mempool, new mempool: ${mempoolTXs} and UTXOs: ${JSON.stringify(mempoolUTXOs)}`)
+                        }
                         break
                     case 'ihaveobject':
                         console.log(`Received ihaveobject ${message.objectid} from ${remoteAddress}`)
@@ -557,8 +568,11 @@ const handleConnection = async (socket: Socket) => {
                     case 'getchaintip':
                         console.log(`Received chaintip request from ${remoteAddress}`)
                         if (await chaintip.exists(CHAINTIP)) {
-                            await chaintip.get(CHAINTIP)
-                                          .then((tip) => sendMessage(socket, {type: 'chaintip', blockid: tip.hash}))
+                            let tip = await chaintip.get(CHAINTIP)
+                            console.log(`Sending chaintip ${JSON.stringify(tip)} to ${remoteAddress}`)
+                            await sendMessage(socket, {type: 'chaintip', blockid: tip.hash})
+                        } else {
+                            console.log(`No chaintip found!`)
                         }
                         break
                     case 'mempool':
@@ -579,7 +593,7 @@ const handleConnection = async (socket: Socket) => {
             if (err instanceof ProtocolError) {
                 await sendError(socket, err.errName, err.errDescription)
             } else if (err instanceof SyntaxError || err instanceof ZodError) {
-                await sendError(socket, 'INVALID_FORMAT', 'The format of the received message is invalid.')
+                await sendError(socket, 'INVALID_FORMAT', `message:${json}, error:${'stack' in err ? err.stack : `${err.name}: ${err.message}`}`)
             } else {
                 console.log(`!!INTERNAL_ERROR!! ${err} --- ${err.stack}`)
                 await sendError(socket, 'INTERNAL_ERROR', `Something unexpected happened: ${'name' in err ? err.name : 'error'}`)
