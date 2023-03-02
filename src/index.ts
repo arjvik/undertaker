@@ -45,9 +45,9 @@ const GENESIS_BLOCK = "0000000052a0e645eca917ae1c196e0d0a4fb756747f29ef52594d684
 
 const CHAINTIP = '<<CHAINTIP>>'
 
-const peers: Set<string> = new Set(['45.63.84.226:18018', '45.63.89.228:18018', '144.202.122.8:18018'])
+// const peers: Set<string> = new Set(['45.63.84.226:18018', '45.63.89.228:18018', '144.202.122.8:18018'])
 // const peers: Set<string> = new Set(['127.0.0.1:19019', '127.0.0.1:20020'])
-// const peers: Set<string> = new Set(['45.63.84.226:18018'])
+const peers: Set<string> = new Set(['45.63.84.226:18018'])
 const sockets: Set<Socket> = new Set()
 const db: level<types.Object> = new level('./database')
 const utxos: level<types.UTXO[]> = new level('./utxos')
@@ -466,14 +466,14 @@ const handleConnection = async (socket: Socket) => {
         try {
             buffer += chunk.toString(undefined, 0, MAX_MESSAGE_LENGTH)
             buffer = buffer.substring(0, MAX_MESSAGE_LENGTH)
-            console.log(`FIRST Buffer is now (buffer.indexOf('\\n')=${buffer.indexOf('\n')}) ${JSON.stringify(buffer)} for ${remoteAddress}`)
+            // console.log(`FIRST Buffer is now (buffer.indexOf('\\n')=${buffer.indexOf('\n')}) ${JSON.stringify(buffer)} for ${remoteAddress}`)
             if (buffer.indexOf('\n') != -1) {
                 clearTimeout(timeoutID)
             }
             while (buffer.indexOf('\n') != -1) {
                 json = buffer.substring(0, buffer.indexOf('\n'))
                 buffer = buffer.substring(buffer.indexOf('\n') + 1)
-                console.log(`Buffer is now (buffer.indexOf('\\n')=${buffer.indexOf('\n')}) ${JSON.stringify(buffer)} for ${remoteAddress}`)
+                // console.log(`Buffer is now (buffer.indexOf('\\n')=${buffer.indexOf('\n')}) ${JSON.stringify(buffer)} for ${remoteAddress}`)
 
                 console.log(`Received message ${json} from ${remoteAddress}`)
                 if (json.trim() == '') {
