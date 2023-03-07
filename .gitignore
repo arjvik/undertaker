@@ -1,0 +1,8 @@
+/package-lock.json
+/node_modules
+/dist
+/*.pcap
+/*.log.gz
+/database
+/utxos
+/chaintip
