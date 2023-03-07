@@ -16,6 +16,7 @@ COPY rust_hasher .
 RUN --mount=type=cache,target=/usr/local/cargo/registry cargo build --release
 
 FROM node:alpine
+RUN apk add parallel
 WORKDIR /app
 COPY --from=build /app/dist/ ./
 COPY --from=build /app/node_modules/ ./node_modules/

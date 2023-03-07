@@ -29,7 +29,7 @@ import { Block } from './block'
 import { Transaction } from './transaction'
 
 const VERSION = '0.10.0'
-const NAME = 'Malibu (pset5)'
+export const NAME = 'Overtaker (Malibu pset 5 fork, GitHub: arjvik/undertaker, branch pset6, commit {{GIT-HASH}})'
 
 // Number of peers that each peer is allowed to report to us
 const MAX_PEERS_PER_PEER = 30

@@ -1,7 +1,8 @@
 import { Block } from './block'
-import { Chain } from './chain'
+import { Chain, chainManager } from './chain'
 import { logger } from './logger'
-import { AnnotatedError } from './message'
+import { AnnotatedError, TransactionObjectType } from './message'
+import { miner } from './miner'
 import { db, ObjectId, objectManager } from './object'
 import { Transaction } from './transaction'
 import { UTXOSet } from './utxo'
@@ -69,9 +70,12 @@ class MemPool {
       logger.debug(`Failed to add transaction ${tx.txid} to mempool: ${e.message}.`)
       return false
     }
-    logger.debug(`Added transaction ${tx.txid} to mempool`)
+    logger.info(`Added transaction ${tx.txid} to mempool`)
     this.txs.push(tx)
+    await miner.setTransactions(this.txs.map(tx => tx.txid))
+    miner.startMining()
     await this.save()
+    
     return true
   }
   async reorg(lca: Block, shortFork: Chain, longFork: Chain) {
@@ -103,7 +107,14 @@ class MemPool {
         ++successes
       }
     }
+<<<<<<< HEAD
     await this.save()
+=======
+    if (orphanedTxs.length === 0) {
+      await miner.setTransactions([])
+      miner.startMining()
+    }
+>>>>>>> 8684712 (Working miner!!)
     logger.info(`Re-applied ${successes} transaction(s) to mempool.`)
     logger.info(`${successes - orphanedTxs.length} transactions were abandoned.`)
     logger.info(`Mempool reorg completed.`)

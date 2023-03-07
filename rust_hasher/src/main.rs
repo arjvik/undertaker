@@ -1,13 +1,15 @@
 use num::{bigint::RandBigInt, BigUint, Num};
+use std::env;
 use std::ops::Range;
 use rand::thread_rng;
 use blake2s_simd::{many::{hash_many, HashManyJob}, Params};
 
 fn main() {
-    let t: BigUint = BigUint::from_str_radix(format!("{:0<64}", "0000abc").as_str(), 16).unwrap();
+    let args = env::args().collect::<Vec<String>>();
+    let t: BigUint = BigUint::from_str_radix(format!("{:0<64}", "00000000abc").as_str(), 16).unwrap();
     const BATCH: u32 = 256;
-    const PREFIX: &str = "{\"T\":\"00000000abc00000000000000000000000000000000000000000000000000000\",\"created\":1677205104,\"miner\":\"Undertaker (GitHub: arjvik/undertaker, commit ee374f0)\",\"nonce\":\"";
-    const SUFFIX: &str = "\",\"note\":\"Block 9 (student mined)\",\"previd\":\"0000000077905b7e3664183c7f1e336b8d0eef1d1569ad6d414e398d2d10bf98\",\"studentids\":[\"arjvik\",\"aalinur\"],\"txids\":[\"942f41dc862ea67052c72df547d43de2edfea08ba007c7e2d0c73c593ed145c6\"],\"type\":\"block\"}";
+    let PREFIX: &str = args[1].as_str();
+    let SUFFIX: &str = args[2].as_str();
     let mut nonce: BigUint = thread_rng().gen_biguint(255) + (BigUint::from(1u32) << 255);
     // let mut nonce: BigUint = BigUint::from(0u32);
     let mut params = Params::new();

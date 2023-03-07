@@ -1,6 +1,8 @@
 import { Block } from "./block";
 import { logger } from "./logger";
 import { mempool } from "./mempool";
+import { TransactionObjectType } from "./message";
+import { miner } from "./miner";
 import { db } from "./object";
 
 class ChainManager {
@@ -23,6 +25,7 @@ class ChainManager {
     this.longestChainTip = await Block.fromNetworkObject(tip)
     this.longestChainHeight = height
     if (inited) {
+      await miner.buildCoinbase(height, this.longestChainTip.blockid)
       await this.save()
     }
     logger.debug(`Chain manager initialized.`)
@@ -54,6 +57,9 @@ class ChainManager {
       }
       this.longestChainHeight = height
       this.longestChainTip = block
+      
+      await miner.buildCoinbase(height, block.blockid)
+      
       await mempool.reorg(lca, shortFork, longFork)
       await this.save()
     }
