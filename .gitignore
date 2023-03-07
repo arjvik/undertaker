@@ -3,6 +3,4 @@
 /dist
 /*.pcap
 /*.log.gz
-/database
-/utxos
-/chaintip
+/db
