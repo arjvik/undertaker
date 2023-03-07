@@ -44,10 +44,14 @@ class Miner {
     }
     await objectManager.put(coinbase)
     this.coinbase = objectManager.id(coinbase)
+    network.broadcast({
+      type: 'ihaveobject',
+      objectid: this.coinbase
+    })
     this.prevblock = prevBlock
     this.height = height
   }
-  async setTransactions(txs: string[]) {
+  setTransactions(txs: string[]) {
     this.block = {
       "T": "00000000abc00000000000000000000000000000000000000000000000000000",
       "created": Math.floor(new Date().getTime() / 1000),

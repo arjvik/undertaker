@@ -58,7 +58,7 @@ class MemPool {
       await this.save()
     }
   }
-  async onTransactionArrival(tx: Transaction): Promise<boolean> {
+  async onTransactionArrival(tx: Transaction, bulk: boolean = false): Promise<boolean> {
     try {
       if (tx.isCoinbase()) {
         throw new Error('coinbase cannot be added to mempool')
@@ -72,8 +72,10 @@ class MemPool {
     }
     logger.info(`Added transaction ${tx.txid} to mempool`)
     this.txs.push(tx)
-    await miner.setTransactions(this.txs.map(tx => tx.txid))
-    miner.startMining()
+    miner.setTransactions(this.txs.map(tx => tx.txid))
+    if (!bulk) {
+      miner.startMining()
+    }
     await this.save()
     
     return true
@@ -101,20 +103,16 @@ class MemPool {
 
     let successes = 0
     for (const tx of orphanedTxs) {
-      const success = await this.onTransactionArrival(tx)
+      const success = await this.onTransactionArrival(tx, true)
 
       if (success) {
         ++successes
       }
     }
-<<<<<<< HEAD
-    await this.save()
-=======
     if (orphanedTxs.length === 0) {
-      await miner.setTransactions([])
-      miner.startMining()
+      miner.setTransactions([])
     }
->>>>>>> 8684712 (Working miner!!)
+    miner.startMining()
     logger.info(`Re-applied ${successes} transaction(s) to mempool.`)
     logger.info(`${successes - orphanedTxs.length} transactions were abandoned.`)
     logger.info(`Mempool reorg completed.`)
