@@ -2,6 +2,7 @@ import * as child from 'child_process';
 import { Hash } from 'crypto';
 import { canonicalize } from 'json-canonicalize';
 import { chainManager } from './chain';
+import { logger } from './logger';
 import { BlockObject, BlockObjectType, TransactionObjectType } from './message';
 import { network } from './network';
 import { objectManager } from './object';
@@ -15,7 +16,7 @@ class Miner {
   private block: BlockObjectType | null = null
 
   startMining() {
-    console.log(`Starting miner..., height=${this.height} block: ${JSON.stringify(this.block)}`)
+    logger.debug(`Starting miner..., height=${this.height} block: ${JSON.stringify(this.block)}`)
     if (this.minerProcess !== null) {
       this.minerProcess.kill('SIGKILL')
     }
@@ -23,6 +24,7 @@ class Miner {
     const [prefix, suffix] = canonicalize(this.block).split('<<NONCE>>')
     this.minerProcess = child.spawn('./hasher', [prefix, suffix])
     this.minerProcess.stdout?.on('data', (data) => {
+      logger.info(`Mined block ${data}`)
       const mined = BlockObject.check(JSON.parse(data))
       objectManager.put(mined)
       network.broadcast({
@@ -57,7 +59,7 @@ class Miner {
       "created": Math.floor(new Date().getTime() / 1000),
       "miner": NAME,
       "nonce":"<<NONCE>>",
-      "note":"",
+      "note":"AAAV Block",
       "previd": this.prevblock,
       "studentids":["arjvik","aalinur"],
       "txids":[this.coinbase??'', ...txs],

@@ -4,6 +4,8 @@ import { chainManager } from './chain'
 import { mempool } from './mempool'
 import { AnnotatedError } from './message'
 
+process.on('SIGINT', () => process.exit(0));
+
 const BIND_PORT = 18018
 const BIND_IP = '0.0.0.0'
 

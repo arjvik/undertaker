@@ -8,8 +8,8 @@ fn main() {
     let args = env::args().collect::<Vec<String>>();
     let t: BigUint = BigUint::from_str_radix(format!("{:0<64}", "00000000abc").as_str(), 16).unwrap();
     const BATCH: u32 = 256;
-    let PREFIX: &str = args[1].as_str();
-    let SUFFIX: &str = args[2].as_str();
+    let prefix: &str = args[1].as_str();
+    let suffix: &str = args[2].as_str();
     let mut nonce: BigUint = thread_rng().gen_biguint(255) + (BigUint::from(1u32) << 255);
     // let mut nonce: BigUint = BigUint::from(0u32);
     let mut params = Params::new();
@@ -24,7 +24,7 @@ fn main() {
                 .into_iter()
                 .map(|i| nonce.clone() + i)
                 .map(|n: BigUint| n.to_str_radix(16))
-                .map(|s| String::new() + PREFIX + &s[..] + &SUFFIX)
+                .map(|s| String::new() + prefix + &s[..] + &suffix)
                 .map(|s| s.into_bytes())
                 .collect();
         let mut jobs: Vec<HashManyJob> = binding
@@ -44,6 +44,6 @@ fn main() {
     }
     let idx = found.iter().position(|&b| b).unwrap();
     // println!("Nonce: {:0>64}\nHash:  {:0>64}\nQueries: {}", (nonce + idx).to_str_radix(16), hashes[idx].to_str_radix(16), queries);
-    println!("{}{:0>64}{}", PREFIX, (nonce + idx).to_str_radix(16), SUFFIX);
+    println!("{}{:0>64}{}", prefix, (nonce + idx).to_str_radix(16), suffix);
     
 }
