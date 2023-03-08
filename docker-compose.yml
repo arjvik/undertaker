@@ -4,10 +4,6 @@ services:
   undertaker:
     image: undertaker
     build: .
-    volumes:
-      - ./database:/app/database
-      - ./utxos:/app/utxos
-      - ./chaintip:/app/chaintip
     restart: always
     ports:
       - 18018:18018
