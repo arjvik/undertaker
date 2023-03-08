@@ -25,7 +25,7 @@ class ChainManager {
     this.longestChainTip = await Block.fromNetworkObject(tip)
     this.longestChainHeight = height
     if (inited) {
-      await miner.buildCoinbase(height, this.longestChainTip.blockid)
+      await miner.buildCoinbase(height + 1, this.longestChainTip.blockid)
       await this.save()
     }
     logger.debug(`Chain manager initialized.`)
@@ -58,7 +58,7 @@ class ChainManager {
       this.longestChainHeight = height
       this.longestChainTip = block
       
-      await miner.buildCoinbase(height, block.blockid)
+      await miner.buildCoinbase(height + 1, block.blockid)
       
       await mempool.reorg(lca, shortFork, longFork)
       await this.save()
