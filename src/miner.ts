@@ -8,6 +8,8 @@ import { network } from './network';
 import { objectManager } from './object';
 import { NAME } from './peer';
 
+const JOBS = 15;
+
 class Miner {
   private minerProcess: child.ChildProcess | null = null
   private height: number | null = null
@@ -22,7 +24,12 @@ class Miner {
     }
     (this.block as BlockObjectType)['nonce'] = '<<NONCE>>'
     const [prefix, suffix] = canonicalize(this.block).split('<<NONCE>>')
-    this.minerProcess = child.spawn('./hasher', [prefix, suffix])
+    // this.minerProcess = child.spawn('./hasher', [prefix, suffix])
+    this.minerProcess = child.spawn('parallel', ['--will-cite',
+                                                 '-j', JOBS.toString(),
+                                                 '--halt', 'now,done=1',
+                                                 './hasher', `'${prefix}'`, `'${suffix}'`,
+                                                 `:::`, ...Array(15).fill(null).map((_,i)=>i.toString())])
     this.minerProcess.stdout?.on('data', (data) => {
       logger.info(`Mined block ${data}`)
       const mined = BlockObject.check(JSON.parse(data))
