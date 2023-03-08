@@ -33,10 +33,9 @@ class Miner {
     this.minerProcess.stdout?.on('data', (data) => {
       logger.info(`Mined block ${data}`)
       const mined = BlockObject.check(JSON.parse(data))
-      objectManager.put(mined)
       network.broadcast({
-        type: 'ihaveobject',
-        objectid: objectManager.id(mined)
+        type: 'object',
+        object: mined
       })
     });
   }
