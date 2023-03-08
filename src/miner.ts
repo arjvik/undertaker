@@ -59,7 +59,7 @@ class Miner {
       "created": Math.floor(new Date().getTime() / 1000),
       "miner": NAME,
       "nonce":"<<NONCE>>",
-      "note":`Block Height: ${this.height}`,
+      "note":`Block Height: ${this.height+1}`,
       "previd": this.prevblock,
       "studentids":["arjvik","aalinur"],
       "txids":[this.coinbase??'', ...txs],
