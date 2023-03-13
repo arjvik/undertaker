@@ -55,13 +55,16 @@ const mine = () => {
         `:::`, ...Array(JOBS).fill(null).map((_, i) => i.toString())])
     minerProcess.stdout?.on('data', (data) => {
         const mined = BlockObject.parse(JSON.parse(data))
-        console.log({type: 'object', object: coinbase} as ObjectMessage)
-        console.log({type: 'object', object: mined} as ObjectMessage)
+        console.log(canonicalize({type: 'object', object: coinbase} as ObjectMessage))
+        console.log(canonicalize({type: 'object', object: mined} as ObjectMessage))
         height++
         timestamp++
         previous = hashObject(mined)
         minerProcess.kill()
         mine()
+    })
+    minerProcess.stderr?.on('data', (data) => {
+        console.error(`stderr: ${data}`)
     })
 }
 mine()
